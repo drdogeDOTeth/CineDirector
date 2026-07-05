@@ -65,6 +65,25 @@ enum class ECineEasing : uint8
 	Linear,
 };
 
+/**
+ * Scene lighting mood for a shot, applied to the level's sun (directional light).
+ * Overcast is weather rather than a time: it flattens the light but keeps the sun angle.
+ */
+enum class ECineTimeOfDay : uint8
+{
+	Unchanged,
+	Dawn,
+	Morning,
+	Noon,
+	Afternoon,
+	GoldenHour,
+	Sunset,
+	Dusk,
+	Night,
+	Midnight,
+	Overcast,
+};
+
 /** One camera + one move. A description like "close-up, then orbit" yields two of these. */
 struct FCineShotSegment
 {
@@ -122,6 +141,18 @@ struct FCineShotSegment
 	float ChromaticAberrationIntensity = 0.0f;
 	float BloomIntensity = 0.0f;
 	float LensFlareIntensity = 0.0f;
+
+	/** Sun/sky mood for this shot, keyed on the level's directional light per cut. */
+	ECineTimeOfDay TimeOfDay = ECineTimeOfDay::Unchanged;
+
+	/** Height-fog density for this shot. Negative = leave the level's fog untouched. */
+	float FogDensity = -1.0f;
+
+	/** Enable light-shaft bloom (god rays) on the sun. Set once, not keyed. */
+	bool bGodRays = false;
+
+	/** Enable volumetric fog on the height fog actor. Set once, not keyed. */
+	bool bVolumetricFog = false;
 
 	/** Notes the parser wants surfaced to the user (ignored words, assumptions made). */
 	TArray<FString> ParseNotes;

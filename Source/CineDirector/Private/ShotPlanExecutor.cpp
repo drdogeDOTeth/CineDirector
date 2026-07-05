@@ -7,8 +7,13 @@
 #include "Channels/MovieSceneFloatChannel.h"
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Components/LightComponent.h"
 #include "Editor.h"
 #include "Engine/Brush.h"
+#include "Engine/DirectionalLight.h"
+#include "Engine/ExponentialHeightFog.h"
 #include "EngineUtils.h"
 #include "GameFramework/WorldSettings.h"
 #include "LevelEditorViewport.h"
@@ -20,9 +25,11 @@
 #include "ScopedTransaction.h"
 #include "Sections/MovieScene3DTransformSection.h"
 #include "Sections/MovieSceneCameraCutSection.h"
+#include "Sections/MovieSceneColorSection.h"
 #include "Sections/MovieSceneFloatSection.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
+#include "Tracks/MovieSceneColorTrack.h"
 #include "Tracks/MovieSceneFloatTrack.h"
 
 #define LOCTEXT_NAMESPACE "CineDirector"
@@ -352,6 +359,260 @@ namespace CineDirectorExec
 		double Yaw = 0.0;
 	};
 
+	/** What the level's sun should look like for a time-of-day word. */
+	struct FSunPreset
+	{
+		/** Overcast keeps the level's sun angle and only flattens color/intensity. */
+		bool bSetPitch = true;
+		double PitchDeg = -45.0;
+		FLinearColor Color = FLinearColor::White;
+		float Intensity = 10.0f;
+	};
+
+	bool GetSunPreset(ECineTimeOfDay TimeOfDay, FSunPreset& Out)
+	{
+		switch (TimeOfDay)
+		{
+		case ECineTimeOfDay::Dawn:       Out = { true,  -6.0, FLinearColor(1.00f, 0.62f, 0.38f), 4.0f };  return true;
+		case ECineTimeOfDay::Morning:    Out = { true, -30.0, FLinearColor(1.00f, 0.93f, 0.82f), 8.0f };  return true;
+		case ECineTimeOfDay::Noon:       Out = { true, -75.0, FLinearColor(1.00f, 1.00f, 1.00f), 10.0f }; return true;
+		case ECineTimeOfDay::Afternoon:  Out = { true, -45.0, FLinearColor(1.00f, 0.96f, 0.88f), 9.0f };  return true;
+		case ECineTimeOfDay::GoldenHour: Out = { true,  -9.0, FLinearColor(1.00f, 0.68f, 0.32f), 5.0f };  return true;
+		case ECineTimeOfDay::Sunset:     Out = { true,  -3.0, FLinearColor(1.00f, 0.45f, 0.18f), 3.0f };  return true;
+		// Sun just below the horizon: the sky/skylight carries the scene.
+		case ECineTimeOfDay::Dusk:       Out = { true,   4.0, FLinearColor(0.55f, 0.55f, 0.75f), 1.2f };  return true;
+		// A cool dim "moon" stand-in rather than true darkness.
+		case ECineTimeOfDay::Night:      Out = { true, -35.0, FLinearColor(0.45f, 0.55f, 0.90f), 0.35f }; return true;
+		case ECineTimeOfDay::Midnight:   Out = { true, -60.0, FLinearColor(0.40f, 0.48f, 0.85f), 0.15f }; return true;
+		case ECineTimeOfDay::Overcast:   Out = { false,  0.0, FLinearColor(0.82f, 0.86f, 0.95f), 3.0f };  return true;
+		default: return false;
+		}
+	}
+
+	/**
+	 * Reuse an existing possessable of the same name/class (so re-running the tool
+	 * doesn't stack duplicate sun/fog bindings), otherwise add and bind a new one.
+	 */
+	FGuid FindOrAddPossessable(ULevelSequence* Sequence, UMovieScene* MovieScene, const FString& Name, UObject& Object, UObject* Context, const FGuid& ParentGuid = FGuid())
+	{
+		for (int32 i = 0; i < MovieScene->GetPossessableCount(); ++i)
+		{
+			const FMovieScenePossessable& Existing = MovieScene->GetPossessable(i);
+			if (Existing.GetName() == Name && Object.GetClass()->IsChildOf(Existing.GetPossessedObjectClass()))
+			{
+				return Existing.GetGuid();
+			}
+		}
+
+		const FGuid Guid = MovieScene->AddPossessable(Name, Object.GetClass());
+		if (ParentGuid.IsValid())
+		{
+			if (FMovieScenePossessable* Possessable = MovieScene->FindPossessable(Guid))
+			{
+				Possessable->SetParent(ParentGuid, MovieScene);
+			}
+		}
+		Sequence->BindPossessableObject(Guid, Object, Context);
+		return Guid;
+	}
+
+	/** First section of the track grown to cover Range, or a fresh one. */
+	template <typename SectionType>
+	SectionType* GetOrCreateSection(UMovieSceneTrack* Track, const TRange<FFrameNumber>& Range)
+	{
+		if (Track->GetAllSections().Num() > 0)
+		{
+			UMovieSceneSection* Section = Track->GetAllSections()[0];
+			Section->SetRange(TRange<FFrameNumber>::Hull(Section->GetRange(), Range));
+			return Cast<SectionType>(Section);
+		}
+		SectionType* Section = Cast<SectionType>(Track->CreateNewSection());
+		Section->SetRange(Range);
+		Track->AddSection(*Section);
+		return Section;
+	}
+
+	template <typename TrackType>
+	TrackType* FindOrAddPropertyTrack(UMovieScene* MovieScene, const FGuid& Guid, FName PropertyName, const FString& PropertyPath)
+	{
+		TrackType* Track = Cast<TrackType>(MovieScene->FindTrack(TrackType::StaticClass(), Guid, PropertyName));
+		if (!Track)
+		{
+			Track = Cast<TrackType>(MovieScene->AddTrack(TrackType::StaticClass(), Guid));
+			Track->SetPropertyNameAndPath(PropertyName, PropertyPath);
+		}
+		return Track;
+	}
+
+	/**
+	 * Keys the level's sun (pitch / color / intensity) and height fog density per
+	 * shot, using constant-interp keys so lighting snaps at each cut instead of
+	 * lerping across shots. Lighting words on any segment bind the light into the
+	 * sequence; segments without lighting words simply hold the previous state.
+	 */
+	void ApplyLightingTracks(ULevelSequence* Sequence, UMovieScene* MovieScene, UWorld* World,
+		const TArray<TPair<const FCineShotSegment*, FFrameNumber>>& SegmentStarts,
+		const TRange<FFrameNumber>& OverallRange, FCineExecuteResult& Result)
+	{
+		bool bAnySun = false, bAnyFog = false, bAnyGodRays = false, bAnyVolumetric = false;
+		for (const TPair<const FCineShotSegment*, FFrameNumber>& Pair : SegmentStarts)
+		{
+			bAnySun |= Pair.Key->TimeOfDay != ECineTimeOfDay::Unchanged;
+			bAnyFog |= Pair.Key->FogDensity >= 0.0f;
+			bAnyGodRays |= Pair.Key->bGodRays;
+			bAnyVolumetric |= Pair.Key->bVolumetricFog;
+		}
+		if (!bAnySun && !bAnyFog && !bAnyGodRays && !bAnyVolumetric)
+		{
+			return;
+		}
+
+		// ---- Sun --------------------------------------------------------------
+		ADirectionalLight* Sun = nullptr;
+		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+		{
+			Sun = *It;
+			break;
+		}
+		if (!Sun && (bAnySun || bAnyGodRays))
+		{
+			Result.Notes.Add(TEXT("No directional light in the level — time-of-day words were skipped."));
+		}
+
+		if (Sun && bAnySun)
+		{
+			Sun->Modify();
+			const FString SunLabel = Sun->GetActorLabel();
+			const FGuid SunGuid = FindOrAddPossessable(Sequence, MovieScene, SunLabel, *Sun, World);
+
+			// Pitch drives the sun's elevation; everything else defaults to what the
+			// level already had (notably yaw, so the light's composition survives).
+			UMovieScene3DTransformTrack* SunTransform = Cast<UMovieScene3DTransformTrack>(MovieScene->FindTrack(UMovieScene3DTransformTrack::StaticClass(), SunGuid));
+			if (!SunTransform)
+			{
+				SunTransform = Cast<UMovieScene3DTransformTrack>(MovieScene->AddTrack(UMovieScene3DTransformTrack::StaticClass(), SunGuid));
+			}
+			UMovieScene3DTransformSection* SunSection = GetOrCreateSection<UMovieScene3DTransformSection>(SunTransform, OverallRange);
+			TArrayView<FMovieSceneDoubleChannel*> SunChannels = SunSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+			if (SunChannels.Num() >= 9)
+			{
+				const FVector SunLoc = Sun->GetActorLocation();
+				const FRotator SunRot = Sun->GetActorRotation();
+				const double Defaults[9] = { SunLoc.X, SunLoc.Y, SunLoc.Z, SunRot.Roll, SunRot.Pitch, SunRot.Yaw, 1.0, 1.0, 1.0 };
+				for (int32 i = 0; i < 9; ++i)
+				{
+					if (!SunChannels[i]->GetDefault().IsSet())
+					{
+						SunChannels[i]->SetDefault(Defaults[i]);
+					}
+				}
+			}
+
+			ULightComponent* LightComp = Sun->GetLightComponent();
+			const FGuid LightGuid = FindOrAddPossessable(Sequence, MovieScene, LightComp->GetName(), *LightComp, Sun, SunGuid);
+
+			UMovieSceneFloatTrack* IntensityTrack = FindOrAddPropertyTrack<UMovieSceneFloatTrack>(MovieScene, LightGuid, TEXT("Intensity"), TEXT("Intensity"));
+			UMovieSceneFloatSection* IntensitySection = GetOrCreateSection<UMovieSceneFloatSection>(IntensityTrack, OverallRange);
+			TArrayView<FMovieSceneFloatChannel*> IntensityChannels = IntensitySection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+
+			UMovieSceneColorTrack* ColorTrack = FindOrAddPropertyTrack<UMovieSceneColorTrack>(MovieScene, LightGuid, TEXT("LightColor"), TEXT("LightColor"));
+			UMovieSceneColorSection* ColorSection = GetOrCreateSection<UMovieSceneColorSection>(ColorTrack, OverallRange);
+			TArrayView<FMovieSceneFloatChannel*> ColorChannels = ColorSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+
+			TArray<FString> MoodNames;
+			for (const TPair<const FCineShotSegment*, FFrameNumber>& Pair : SegmentStarts)
+			{
+				FSunPreset Preset;
+				if (!GetSunPreset(Pair.Key->TimeOfDay, Preset))
+				{
+					continue;
+				}
+				const FFrameNumber At = Pair.Value;
+				if (Preset.bSetPitch && SunChannels.Num() >= 9)
+				{
+					SunChannels[4]->AddConstantKey(At, Preset.PitchDeg);
+				}
+				if (IntensityChannels.Num() > 0)
+				{
+					IntensityChannels[0]->AddConstantKey(At, Preset.Intensity);
+				}
+				if (ColorChannels.Num() >= 4)
+				{
+					ColorChannels[0]->AddConstantKey(At, Preset.Color.R);
+					ColorChannels[1]->AddConstantKey(At, Preset.Color.G);
+					ColorChannels[2]->AddConstantKey(At, Preset.Color.B);
+					ColorChannels[3]->AddConstantKey(At, 1.0f);
+				}
+			}
+			Result.Notes.Add(FString::Printf(TEXT("Sun '%s': time-of-day keyed per shot (pitch, color, intensity)."), *SunLabel));
+		}
+
+		if (Sun && bAnyGodRays)
+		{
+			if (UDirectionalLightComponent* DirComp = Cast<UDirectionalLightComponent>(Sun->GetLightComponent()))
+			{
+				DirComp->Modify();
+				DirComp->bEnableLightShaftBloom = true;
+				DirComp->MarkRenderStateDirty();
+				Result.Notes.Add(TEXT("God rays: light-shaft bloom enabled on the sun."));
+			}
+		}
+
+		// ---- Fog --------------------------------------------------------------
+		if (bAnyFog || bAnyVolumetric)
+		{
+			AExponentialHeightFog* Fog = nullptr;
+			for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+			{
+				Fog = *It;
+				break;
+			}
+			if (!Fog)
+			{
+				FActorSpawnParameters SpawnParams;
+				SpawnParams.ObjectFlags |= RF_Transactional;
+				Fog = World->SpawnActor<AExponentialHeightFog>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+				if (Fog)
+				{
+					Fog->SetActorLabel(TEXT("CineDirector Fog"));
+					Result.Notes.Add(TEXT("No height fog in the level — spawned 'CineDirector Fog'."));
+				}
+			}
+			if (Fog)
+			{
+				Fog->Modify();
+				UExponentialHeightFogComponent* FogComp = Fog->GetComponent();
+
+				if (bAnyVolumetric || (bAnyGodRays && bAnyFog))
+				{
+					FogComp->Modify();
+					FogComp->SetVolumetricFog(true);
+					Result.Notes.Add(TEXT("Volumetric fog enabled."));
+				}
+
+				if (bAnyFog)
+				{
+					const FGuid FogActorGuid = FindOrAddPossessable(Sequence, MovieScene, Fog->GetActorLabel(), *Fog, World);
+					const FGuid FogCompGuid = FindOrAddPossessable(Sequence, MovieScene, FogComp->GetName(), *FogComp, Fog, FogActorGuid);
+					UMovieSceneFloatTrack* DensityTrack = FindOrAddPropertyTrack<UMovieSceneFloatTrack>(MovieScene, FogCompGuid, TEXT("FogDensity"), TEXT("FogDensity"));
+					UMovieSceneFloatSection* DensitySection = GetOrCreateSection<UMovieSceneFloatSection>(DensityTrack, OverallRange);
+					TArrayView<FMovieSceneFloatChannel*> DensityChannels = DensitySection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+					if (DensityChannels.Num() > 0)
+					{
+						for (const TPair<const FCineShotSegment*, FFrameNumber>& Pair : SegmentStarts)
+						{
+							if (Pair.Key->FogDensity >= 0.0f)
+							{
+								DensityChannels[0]->AddConstantKey(Pair.Value, Pair.Key->FogDensity);
+							}
+						}
+					}
+					Result.Notes.Add(TEXT("Fog density keyed per shot."));
+				}
+			}
+		}
+	}
+
 	void AddTransformKeys(UMovieScene3DTransformSection* Section, const FShotSampler& Sampler, FFrameNumber SegStart, FFrameRate TickResolution, FEulerContinuity& Euler, bool bSkipFirstKey = false)
 	{
 		const FCineShotSegment& Seg = Sampler.Seg;
@@ -570,6 +831,7 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 		bool bTrackingFocusSet = false;
 		TArray<TPair<FFrameNumber, float>> FocalKeys;
 		TArray<TPair<FFrameNumber, float>> FocusKeys;
+		TArray<TPair<const FCineShotSegment*, FFrameNumber>> SegmentStarts;
 
 		FVector PrevPos = StartPos;
 		FRotator PrevRot = StartRot;
@@ -592,6 +854,7 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 			const FFrameNumber SegEnd = SegStart + DurFrames;
 
 			AddTransformKeys(TransformSection, Sampler, SegStart, TickResolution, Euler, /*bSkipFirstKey*/ !bFirst);
+			SegmentStarts.Emplace(&Seg, SegStart);
 
 			// Zooms and mid-take lens changes become keys on one shared focal-length track.
 			if (Seg.Move == ECineMoveType::ZoomIn || Seg.Move == ECineMoveType::ZoomOut)
@@ -727,6 +990,8 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 			}
 		}
 
+		ApplyLightingTracks(Sequence, MovieScene, World, SegmentStarts, TRange<FFrameNumber>(TakeStart, Cursor), Result);
+
 		Result.Notes.Insert(FString::Printf(TEXT("Continuous take: camera '%s', %d moves"), *Label, Plan.Segments.Num()), 0);
 		Result.NumShots = 1;
 
@@ -744,6 +1009,9 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 			*Label, Plan.Segments.Num(), Result.TotalDurationSeconds);
 		return Result;
 	}
+
+	const FFrameNumber PlanStart = Cursor;
+	TArray<TPair<const FCineShotSegment*, FFrameNumber>> SegmentStarts;
 
 	int32 ShotIndex = 1;
 	for (const FCineShotSegment& Seg : Plan.Segments)
@@ -927,6 +1195,7 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 
 		Result.TotalDurationSeconds += Seg.DurationSeconds;
 		++Result.NumShots;
+		SegmentStarts.Emplace(&Seg, SegStart);
 		Cursor = SegEnd;
 		++ShotIndex;
 	}
@@ -936,6 +1205,8 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 		Result.Error = LOCTEXT("NothingCreated", "Couldn't create any cameras from the plan.");
 		return Result;
 	}
+
+	ApplyLightingTracks(Sequence, MovieScene, World, SegmentStarts, TRange<FFrameNumber>(PlanStart, Cursor), Result);
 
 	const TRange<FFrameNumber> Playback = MovieScene->GetPlaybackRange();
 	if (Cursor > Playback.GetUpperBoundValue())

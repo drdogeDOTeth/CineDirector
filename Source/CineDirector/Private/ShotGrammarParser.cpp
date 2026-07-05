@@ -627,6 +627,81 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 		bRecognizedAnything = true;
 	}
 
+	// ---- Lighting / time of day ---------------------------------------------
+	// Most specific phrases first ("midnight" before "night", "golden hour"
+	// before anything mentioning "hour").
+	if (ContainsAny(Text, { TEXT("midnight"), TEXT("dead of night") }))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Midnight;
+	}
+	else if (ContainsAny(Text, { TEXT("night"), TEXT("nighttime"), TEXT("night-time"), TEXT("at night"), TEXT("moonlight"), TEXT("moonlit"), TEXT("night falls") }))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Night;
+	}
+	else if (ContainsAny(Text, { TEXT("dawn"), TEXT("sunrise"), TEXT("daybreak"), TEXT("first light") }))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Dawn;
+	}
+	else if (ContainsAny(Text, { TEXT("golden hour"), TEXT("magic hour"), TEXT("golden light") }))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::GoldenHour;
+	}
+	else if (ContainsAny(Text, { TEXT("sunset"), TEXT("setting sun"), TEXT("sun sets"), TEXT("sundown") }))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Sunset;
+	}
+	else if (ContainsAny(Text, { TEXT("dusk"), TEXT("twilight"), TEXT("evening") }))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Dusk;
+	}
+	else if (ContainsAny(Text, { TEXT("noon"), TEXT("midday"), TEXT("broad daylight"), TEXT("high sun") }))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Noon;
+	}
+	else if (ContainsPhrase(Text, TEXT("afternoon")))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Afternoon;
+	}
+	else if (ContainsPhrase(Text, TEXT("morning")))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Morning;
+	}
+	else if (ContainsAny(Text, { TEXT("overcast"), TEXT("cloudy"), TEXT("gloomy"), TEXT("grey sky"), TEXT("gray sky"), TEXT("grey skies"), TEXT("gray skies") }))
+	{
+		OutSegment.TimeOfDay = ECineTimeOfDay::Overcast;
+	}
+	if (OutSegment.TimeOfDay != ECineTimeOfDay::Unchanged)
+	{
+		bRecognizedAnything = true;
+	}
+
+	// ---- Fog / atmosphere -----------------------------------------------------
+	if (ContainsAny(Text, { TEXT("no fog"), TEXT("fog lifts"), TEXT("fog clears"), TEXT("clear air") }))
+	{
+		OutSegment.FogDensity = 0.002f;
+		bRecognizedAnything = true;
+	}
+	else if (ContainsAny(Text, { TEXT("fog"), TEXT("foggy"), TEXT("mist"), TEXT("misty"), TEXT("haze"), TEXT("hazy") }))
+	{
+		const bool bThick = ContainsAny(Text, { TEXT("thick"), TEXT("dense"), TEXT("heavy"), TEXT("soupy") });
+		const bool bThin = ContainsAny(Text, { TEXT("light"), TEXT("slight"), TEXT("thin"), TEXT("wispy"), TEXT("faint"), TEXT("gentle"), TEXT("a bit of") });
+		// Mist and haze without the word "fog" read as the lighter end by default.
+		const bool bMistOnly = !ContainsAny(Text, { TEXT("fog"), TEXT("foggy") });
+		OutSegment.FogDensity = bThick ? 0.15f : ((bThin || bMistOnly) ? 0.03f : 0.06f);
+		bRecognizedAnything = true;
+	}
+
+	if (ContainsAny(Text, { TEXT("god rays"), TEXT("god-rays"), TEXT("godrays"), TEXT("light shafts"), TEXT("light shaft"), TEXT("sunbeams"), TEXT("sun beams"), TEXT("crepuscular") }))
+	{
+		OutSegment.bGodRays = true;
+		bRecognizedAnything = true;
+	}
+	if (ContainsPhrase(Text, TEXT("volumetric")))
+	{
+		OutSegment.bVolumetricFog = true;
+		bRecognizedAnything = true;
+	}
+
 	// ---- Timing -----------------------------------------------------------------
 	bool bExplicitDuration = false;
 	if (MatchNumber(Text, TEXT("(\\d+(?:\\.\\d+)?)\\s*(?:s\\b|sec\\b|secs\\b|second|seconds)"), Number) && Number > 0.0)
@@ -744,6 +819,9 @@ FText FShotGrammarParser::GetVocabularyHelpText()
 		"  Focus:    focus on <actor>, rack focus from <actor> to <actor>\n"
 		"  Effects:  handheld / shaky (slightly, very), dutch angle,\n"
 		"            film grain, vignette, chromatic aberration, bloom, lens flares\n"
+		"  Lighting: at dawn / morning / noon / afternoon / golden hour / sunset / dusk /\n"
+		"            night / midnight / overcast — keys the level's sun per shot;\n"
+		"            fog (light, heavy, \"no fog\"), god rays, volumetric fog\n"
 		"  Timing:   \"over 8 seconds\", \"for 3s\", slow, fast\n"
 		"  Amount:   \"180 degrees\", half / full orbit, \"by 4 meters\"\n\n"
 		"Example:\n"

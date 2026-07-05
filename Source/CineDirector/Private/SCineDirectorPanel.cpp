@@ -144,6 +144,8 @@ TSharedRef<SWidget> SCineDirectorPanel::BuildShotBuilder()
 		  TEXT("Static medium shot of the [actor], rack focus from the [actor] to the [other actor]") },
 		{ LOCTEXT("PresetRise", "Flyby & rise"),
 		  TEXT("Quick flyby of the [actor], low angle. Then crane up 4 meters looking at the [actor], vignette") },
+		{ LOCTEXT("PresetSunset", "Sunset mood"),
+		  TEXT("Slow half orbit around the [actor] at sunset, light fog, god rays. Then push in on the [actor] at dusk, heavy fog") },
 	};
 
 	TSharedRef<SWrapBox> PresetWrap = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(4.0f, 4.0f));
@@ -188,6 +190,10 @@ TSharedRef<SWidget> SCineDirectorPanel::BuildShotBuilder()
 		{ LOCTEXT("ChipsEffects", "Effects"),
 			{ TEXT("slightly handheld"), TEXT("handheld"), TEXT("very shaky"), TEXT("dutch angle"), TEXT("film grain"),
 			  TEXT("vignette"), TEXT("chromatic aberration"), TEXT("bloom"), TEXT("lens flares") } },
+		{ LOCTEXT("ChipsLighting", "Light & sky"),
+			{ TEXT("at dawn"), TEXT("morning"), TEXT("at noon"), TEXT("golden hour"), TEXT("at sunset"), TEXT("at dusk"),
+			  TEXT("at night"), TEXT("midnight"), TEXT("overcast"), TEXT("light fog"), TEXT("heavy fog"), TEXT("no fog"),
+			  TEXT("god rays"), TEXT("volumetric fog") } },
 		{ LOCTEXT("ChipsTiming", "Timing & amount"),
 			{ TEXT("slow"), TEXT("fast"), TEXT("over 5 seconds"), TEXT("half orbit"), TEXT("full orbit"),
 			  TEXT("90 degrees"), TEXT("then") } },
