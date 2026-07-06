@@ -10,10 +10,13 @@
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Editor.h"
 #include "Engine/Brush.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
+#include "Engine/SkyLight.h"
 #include "EngineUtils.h"
 #include "GameFramework/WorldSettings.h"
 #include "LevelEditorViewport.h"
@@ -359,7 +362,16 @@ namespace CineDirectorExec
 		double Yaw = 0.0;
 	};
 
-	/** What the level's sun should look like for a time-of-day word. */
+	/**
+	 * What the level's sun should look like for a time-of-day word.
+	 *
+	 * Two flavors: the legacy values fake the mood entirely through the light
+	 * (absolute intensity, tinted color) for levels with no SkyAtmosphere. The
+	 * physical values assume an atmosphere is doing the coloring — only the
+	 * pitch and a multiplier on the level's own sun brightness are keyed, so
+	 * lux-scale setups keep their exposure; color stays white except for the
+	 * moonlight tint, which no atmosphere derives.
+	 */
 	struct FSunPreset
 	{
 		/** Overcast keeps the level's sun angle and only flattens color/intensity. */
@@ -367,24 +379,27 @@ namespace CineDirectorExec
 		double PitchDeg = -45.0;
 		FLinearColor Color = FLinearColor::White;
 		float Intensity = 10.0f;
+		float PhysicalMultiplier = 1.0f;
+		FLinearColor PhysicalColor = FLinearColor::White;
 	};
 
 	bool GetSunPreset(ECineTimeOfDay TimeOfDay, FSunPreset& Out)
 	{
+		const FLinearColor White = FLinearColor::White;
 		switch (TimeOfDay)
 		{
-		case ECineTimeOfDay::Dawn:       Out = { true,  -6.0, FLinearColor(1.00f, 0.62f, 0.38f), 4.0f };  return true;
-		case ECineTimeOfDay::Morning:    Out = { true, -30.0, FLinearColor(1.00f, 0.93f, 0.82f), 8.0f };  return true;
-		case ECineTimeOfDay::Noon:       Out = { true, -75.0, FLinearColor(1.00f, 1.00f, 1.00f), 10.0f }; return true;
-		case ECineTimeOfDay::Afternoon:  Out = { true, -45.0, FLinearColor(1.00f, 0.96f, 0.88f), 9.0f };  return true;
-		case ECineTimeOfDay::GoldenHour: Out = { true,  -9.0, FLinearColor(1.00f, 0.68f, 0.32f), 5.0f };  return true;
-		case ECineTimeOfDay::Sunset:     Out = { true,  -3.0, FLinearColor(1.00f, 0.45f, 0.18f), 3.0f };  return true;
+		case ECineTimeOfDay::Dawn:       Out = { true,  -6.0, FLinearColor(1.00f, 0.62f, 0.38f), 4.0f,  0.80f, White }; return true;
+		case ECineTimeOfDay::Morning:    Out = { true, -30.0, FLinearColor(1.00f, 0.93f, 0.82f), 8.0f,  1.00f, White }; return true;
+		case ECineTimeOfDay::Noon:       Out = { true, -75.0, FLinearColor(1.00f, 1.00f, 1.00f), 10.0f, 1.00f, White }; return true;
+		case ECineTimeOfDay::Afternoon:  Out = { true, -45.0, FLinearColor(1.00f, 0.96f, 0.88f), 9.0f,  1.00f, White }; return true;
+		case ECineTimeOfDay::GoldenHour: Out = { true,  -9.0, FLinearColor(1.00f, 0.68f, 0.32f), 5.0f,  0.90f, White }; return true;
+		case ECineTimeOfDay::Sunset:     Out = { true,  -3.0, FLinearColor(1.00f, 0.45f, 0.18f), 3.0f,  0.80f, White }; return true;
 		// Sun just below the horizon: the sky/skylight carries the scene.
-		case ECineTimeOfDay::Dusk:       Out = { true,   4.0, FLinearColor(0.55f, 0.55f, 0.75f), 1.2f };  return true;
+		case ECineTimeOfDay::Dusk:       Out = { true,   4.0, FLinearColor(0.55f, 0.55f, 0.75f), 1.2f,  0.30f, FLinearColor(0.80f, 0.82f, 0.95f) }; return true;
 		// A cool dim "moon" stand-in rather than true darkness.
-		case ECineTimeOfDay::Night:      Out = { true, -35.0, FLinearColor(0.45f, 0.55f, 0.90f), 0.35f }; return true;
-		case ECineTimeOfDay::Midnight:   Out = { true, -60.0, FLinearColor(0.40f, 0.48f, 0.85f), 0.15f }; return true;
-		case ECineTimeOfDay::Overcast:   Out = { false,  0.0, FLinearColor(0.82f, 0.86f, 0.95f), 3.0f };  return true;
+		case ECineTimeOfDay::Night:      Out = { true, -35.0, FLinearColor(0.45f, 0.55f, 0.90f), 0.35f, 0.02f, FLinearColor(0.70f, 0.80f, 1.00f) }; return true;
+		case ECineTimeOfDay::Midnight:   Out = { true, -60.0, FLinearColor(0.40f, 0.48f, 0.85f), 0.15f, 0.01f, FLinearColor(0.65f, 0.75f, 1.00f) }; return true;
+		case ECineTimeOfDay::Overcast:   Out = { false,  0.0, FLinearColor(0.82f, 0.86f, 0.95f), 3.0f,  0.35f, FLinearColor(0.90f, 0.93f, 1.00f) }; return true;
 		default: return false;
 		}
 	}
@@ -468,19 +483,95 @@ namespace CineDirectorExec
 		}
 
 		// ---- Sun --------------------------------------------------------------
+		// Prefer the directional light the atmosphere already follows; with two
+		// suns in a level, keying the other one would change nothing visible.
 		ADirectionalLight* Sun = nullptr;
 		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
 		{
-			Sun = *It;
-			break;
+			if (!Sun)
+			{
+				Sun = *It;
+			}
+			if ((*It)->GetLightComponent()->IsUsedAsAtmosphereSunLight())
+			{
+				Sun = *It;
+				break;
+			}
 		}
 		if (!Sun && (bAnySun || bAnyGodRays))
 		{
-			Result.Notes.Add(TEXT("No directional light in the level — time-of-day words were skipped."));
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.ObjectFlags |= RF_Transactional;
+			Sun = World->SpawnActor<ADirectionalLight>(FVector::ZeroVector, FRotator(-45.0f, 0.0f, 0.0f), SpawnParams);
+			if (Sun)
+			{
+				Sun->SetActorLabel(TEXT("CineDirector Sun"));
+				Result.Notes.Add(TEXT("No directional light in the level — spawned 'CineDirector Sun'."));
+			}
 		}
 
+		bool bPhysicalSky = false;
 		if (Sun && bAnySun)
 		{
+			// Physical sky: make sure the whole stack exists, spawning what's
+			// missing, then let the atmosphere derive sky and sun color from the
+			// keyed sun pitch instead of faking it with tinted light.
+			ASkyAtmosphere* Atmosphere = nullptr;
+			for (TActorIterator<ASkyAtmosphere> It(World); It; ++It)
+			{
+				Atmosphere = *It;
+				break;
+			}
+			if (!Atmosphere)
+			{
+				FActorSpawnParameters SpawnParams;
+				SpawnParams.ObjectFlags |= RF_Transactional;
+				Atmosphere = World->SpawnActor<ASkyAtmosphere>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+				if (Atmosphere)
+				{
+					Atmosphere->SetActorLabel(TEXT("CineDirector Sky Atmosphere"));
+					Result.Notes.Add(TEXT("No SkyAtmosphere in the level — spawned 'CineDirector Sky Atmosphere'."));
+				}
+			}
+
+			ASkyLight* SkyLight = nullptr;
+			for (TActorIterator<ASkyLight> It(World); It; ++It)
+			{
+				SkyLight = *It;
+				break;
+			}
+			if (!SkyLight)
+			{
+				FActorSpawnParameters SpawnParams;
+				SpawnParams.ObjectFlags |= RF_Transactional;
+				SkyLight = World->SpawnActor<ASkyLight>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+				if (SkyLight && SkyLight->GetLightComponent())
+				{
+					// Real-time capture keeps the ambient light in step with the keyed
+					// sun, so night shots go dark without a manual recapture.
+					USkyLightComponent* SkyComp = SkyLight->GetLightComponent();
+					SkyComp->Modify();
+					SkyComp->SetMobility(EComponentMobility::Movable);
+					SkyComp->SetRealTimeCaptureEnabled(true);
+					SkyLight->SetActorLabel(TEXT("CineDirector Sky Light"));
+					Result.Notes.Add(TEXT("No SkyLight in the level — spawned 'CineDirector Sky Light' (real-time capture)."));
+				}
+			}
+
+			bPhysicalSky = Atmosphere != nullptr;
+			if (bPhysicalSky)
+			{
+				if (UDirectionalLightComponent* DirComp = Cast<UDirectionalLightComponent>(Sun->GetLightComponent()))
+				{
+					if (!DirComp->IsUsedAsAtmosphereSunLight())
+					{
+						DirComp->Modify();
+						DirComp->SetAtmosphereSunLight(true);
+						Result.Notes.Add(TEXT("Enabled 'Atmosphere Sun Light' on the sun so the sky follows it."));
+					}
+				}
+			}
+
 			Sun->Modify();
 			const FString SunLabel = Sun->GetActorLabel();
 			const FGuid SunGuid = FindOrAddPossessable(Sequence, MovieScene, SunLabel, *Sun, World);
@@ -519,7 +610,23 @@ namespace CineDirectorExec
 			UMovieSceneColorSection* ColorSection = GetOrCreateSection<UMovieSceneColorSection>(ColorTrack, OverallRange);
 			TArrayView<FMovieSceneFloatChannel*> ColorChannels = ColorSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
 
-			TArray<FString> MoodNames;
+			// Physical mode scales the level's own sun brightness so lux-scale
+			// setups keep their exposure. The pre-animation value lives in the
+			// channel default: on re-runs the component may already be showing a
+			// keyed value (e.g. 2% for night), which must not become the new base.
+			float BaseIntensity = LightComp->Intensity;
+			if (IntensityChannels.Num() > 0)
+			{
+				if (IntensityChannels[0]->GetDefault().IsSet())
+				{
+					BaseIntensity = IntensityChannels[0]->GetDefault().GetValue();
+				}
+				else
+				{
+					IntensityChannels[0]->SetDefault(BaseIntensity);
+				}
+			}
+
 			for (const TPair<const FCineShotSegment*, FFrameNumber>& Pair : SegmentStarts)
 			{
 				FSunPreset Preset;
@@ -528,23 +635,33 @@ namespace CineDirectorExec
 					continue;
 				}
 				const FFrameNumber At = Pair.Value;
+				const float Intensity = bPhysicalSky ? BaseIntensity * Preset.PhysicalMultiplier : Preset.Intensity;
+				const FLinearColor Color = bPhysicalSky ? Preset.PhysicalColor : Preset.Color;
+
 				if (Preset.bSetPitch && SunChannels.Num() >= 9)
 				{
 					SunChannels[4]->AddConstantKey(At, Preset.PitchDeg);
 				}
 				if (IntensityChannels.Num() > 0)
 				{
-					IntensityChannels[0]->AddConstantKey(At, Preset.Intensity);
+					IntensityChannels[0]->AddConstantKey(At, Intensity);
 				}
 				if (ColorChannels.Num() >= 4)
 				{
-					ColorChannels[0]->AddConstantKey(At, Preset.Color.R);
-					ColorChannels[1]->AddConstantKey(At, Preset.Color.G);
-					ColorChannels[2]->AddConstantKey(At, Preset.Color.B);
+					ColorChannels[0]->AddConstantKey(At, Color.R);
+					ColorChannels[1]->AddConstantKey(At, Color.G);
+					ColorChannels[2]->AddConstantKey(At, Color.B);
 					ColorChannels[3]->AddConstantKey(At, 1.0f);
 				}
 			}
-			Result.Notes.Add(FString::Printf(TEXT("Sun '%s': time-of-day keyed per shot (pitch, color, intensity)."), *SunLabel));
+			if (bPhysicalSky)
+			{
+				Result.Notes.Add(FString::Printf(TEXT("Sun '%s': time-of-day keyed per shot (physical sky — atmosphere colors the light)."), *SunLabel));
+			}
+			else
+			{
+				Result.Notes.Add(FString::Printf(TEXT("Sun '%s': time-of-day keyed per shot (pitch, color, intensity)."), *SunLabel));
+			}
 		}
 
 		if (Sun && bAnyGodRays)
