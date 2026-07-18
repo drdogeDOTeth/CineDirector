@@ -16,7 +16,7 @@ public class CineDirector : ModuleRules
 			"Sequencer", "CinematicCamera", "MovieRenderPipelineCore",
 			"MovieRenderPipelineEditor", "MovieRenderPipelineRenderPasses",
 			"MovieRenderPipelineSettings", "AssetTools", "AssetRegistry",
-			"ContentBrowser", "IKRig", "IKRigEditor",
+			"ContentBrowser", "IKRig", "IKRigEditor", "DesktopPlatform",
 		});
 	}
 }

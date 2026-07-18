@@ -27,6 +27,10 @@ Enable **Trailer mode** on an MP4 render to have the finished render cut into a 
 
 Describe the edit in the **Style** box in plain language — look (`found footage`, `security cam`, `vhs`, `cinematic letterbox`), grade (`black and white`, `green/alien`, `warm`, `cold`, `natural` — default is the footage's own colors), texture (`handheld`, `flicker`, `grainy`, `no grain`), pacing (`fast cuts` vs `slow`), music (`eerie`, `tense/heartbeat`, `somber`, `no music`, `drone only`), and `bold title`. Unmentioned aspects get defaults; the parsed interpretation is logged to `LogCineDirectorTrailer`. Title, three card lines, and the camera tag are editable fields. See [references/prompt-grammar.md](references/prompt-grammar.md) for the full style vocabulary.
 
+## Animate a face
+
+In **Face & Lipsync**: select the character, **Use Selected Actor**, then **Analyze Face** to confirm morph-target mapping before generating (paste unmapped morph names into the analyzer's tables if slots are missing). Provide dialogue audio (.wav directly; mp3/ogg/flac/m4a require ffmpeg) for audio-driven lipsync, or leave it empty with "Talking" checked for synthesized speech motion. Describe emotion in plain language (`scared`, `angry`, ... with `slightly`/`very` and `then` arcs). The bake is a curves-only additive UAnimSequence layered onto the character in the open Level Sequence — body animation is untouched; audio lands on the sequence's audio track.
+
 ## Develop the plugin
 
 Preserve the separation between interpretation and execution:

@@ -86,6 +86,28 @@ how the description was understood. Anything unmentioned gets a sensible default
 Title, three teaser card lines, and the camera tag are all editable in the panel,
 and finished trailers never overwrite earlier ones.
 
+## Face & Lipsync
+
+The **Face & Lipsync** section animates faces and blends them with body
+animation. Select a character, and **Analyze Face** maps its morph targets onto
+CineDirector's canonical face slots (ARKit blendshapes, Oculus/Reallusion
+visemes, and MetaHuman `CTRL_expressions` controls are recognized by name;
+anything else is fuzzy-matched). Then:
+
+- **Audio-driven lipsync** — point at a dialogue file (WAV directly; MP3/OGG/
+  FLAC/M4A via ffmpeg). The energy envelope drives the jaw, spectral balance
+  shapes the mouth, dips become M/B/P closures. The audio is imported and
+  placed on the sequence's audio track, synced to the animation.
+- **No audio yet** — "Talking" synthesizes natural syllables and pauses.
+- **Emotions in plain language** — `scared`, `angry`, `happy`, `sad`,
+  `surprised`, `disgusted`, `pain`, `suspicious`, `calm`, with `slightly`/`very`
+  modifiers and `then` for arcs (`calm then very scared`), plus auto-blinks.
+
+The result is a curves-only **additive** animation asset layered onto the
+character in the open Level Sequence — it carries no bone data, so the body
+animation underneath keeps playing and only the face moves. Face and body work
+together with zero setup.
+
 ## Auto Retarget (IK Rig)
 
 The panel also includes an interactive Skeletal Mesh → IK Rig workflow: analyze a
@@ -100,6 +122,7 @@ Rig, and save/load mapping profiles for reuse.
 - `ShotPlanExecutor` — spawns the cameras and authors Sequencer tracks from a plan.
 - `CineRenderLauncher` — Movie Render Queue job setup (formats, quality, ffmpeg discovery for MP4).
 - `CineTrailerProcessor` — style parsing + the ffmpeg trailer pipeline (background thread).
+- `CineFaceAnalyzer` / `CineLipsync` / `CineFaceBaker` — morph mapping, audio analysis, and the additive face-animation bake.
 - `CineDirectorSkeletonAnalyzer` / `CineDirectorIKRigGenerator` / `SCineDirectorAutoRetargetPanel` — the Auto Retarget workflow.
 - `SCineDirectorPanel` / `CineDirectorModule` — the editor tab wiring.
 
