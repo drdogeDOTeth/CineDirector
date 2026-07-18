@@ -1,0 +1,4 @@
+interface:
+  display_name: "CineDirector"
+  short_description: "Create and evolve CineDirector workflows"
+  default_prompt: "Use $cinedirector to build a cinematic shot sequence with CineDirector."

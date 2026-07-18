@@ -14,17 +14,10 @@
 	"CanContainContent": false,
 	"IsBetaVersion": true,
 	"Installed": false,
-	"Modules": [
-		{
-			"Name": "CineDirector",
-			"Type": "Editor",
-			"LoadingPhase": "PostEngineInit"
-		}
-	],
+	"Modules": [{ "Name": "CineDirector", "Type": "Editor", "LoadingPhase": "PostEngineInit" }],
 	"Plugins": [
-		{
-			"Name": "LevelSequenceEditor",
-			"Enabled": true
-		}
+		{ "Name": "LevelSequenceEditor", "Enabled": true },
+		{ "Name": "MovieRenderPipeline", "Enabled": true },
+		{ "Name": "IKRig", "Enabled": true }
 	]
 }
