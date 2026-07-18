@@ -390,7 +390,29 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 	}
 
 	// ---- View side --------------------------------------------------------------
-	if (ContainsAny(Text, { TEXT("over the shoulder"), TEXT("over-the-shoulder"), TEXT("ots") }))
+	// Possessive sides ("its left", "behind it") are relative to the actor's own
+	// root rotation; plain sides ("from the left") are relative to the viewport.
+	if (ContainsAny(Text, { TEXT("its front"), TEXT("his front"), TEXT("her front"), TEXT("their front") }))
+	{
+		OutSegment.ViewSide = ECineViewSide::Front;
+		OutSegment.bActorRelativeSide = true;
+	}
+	else if (ContainsAny(Text, { TEXT("its back"), TEXT("its rear"), TEXT("his back"), TEXT("her back"), TEXT("their back"), TEXT("behind it"), TEXT("behind him"), TEXT("behind her"), TEXT("behind them") }))
+	{
+		OutSegment.ViewSide = ECineViewSide::Behind;
+		OutSegment.bActorRelativeSide = true;
+	}
+	else if (ContainsAny(Text, { TEXT("its left"), TEXT("his left"), TEXT("her left"), TEXT("their left") }))
+	{
+		OutSegment.ViewSide = ECineViewSide::Left;
+		OutSegment.bActorRelativeSide = true;
+	}
+	else if (ContainsAny(Text, { TEXT("its right"), TEXT("his right"), TEXT("her right"), TEXT("their right") }))
+	{
+		OutSegment.ViewSide = ECineViewSide::Right;
+		OutSegment.bActorRelativeSide = true;
+	}
+	else if (ContainsAny(Text, { TEXT("over the shoulder"), TEXT("over-the-shoulder"), TEXT("ots") }))
 	{
 		OutSegment.ViewSide = ECineViewSide::OverShoulder;
 	}
@@ -405,6 +427,67 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 	else if (ContainsAny(Text, { TEXT("from the right"), TEXT("from right") }))
 	{
 		OutSegment.ViewSide = ECineViewSide::Right;
+	}
+
+	// ---- Look-at / tracking target -----------------------------------------------
+	// "orbit around the tower looking at the knight" aims the lens at a different
+	// actor than the one the move pivots on. "track/follow <actor>" also locks
+	// autofocus onto it.
+	{
+		struct FLookPhrase
+		{
+			const TCHAR* Phrase;
+			bool bAlsoTrackFocus;
+		};
+		static const FLookPhrase LookPhrases[] =
+		{
+			{ TEXT(" looking at "), false },
+			{ TEXT(" look at "), false },
+			{ TEXT(" looks at "), false },
+			{ TEXT(" aimed at "), false },
+			{ TEXT(" aiming at "), false },
+			{ TEXT(" aim at "), false },
+			{ TEXT(" facing "), false },
+			{ TEXT(" watching "), true },
+			{ TEXT(" tracking "), true },
+			{ TEXT(" track "), true },
+			{ TEXT(" following "), true },
+			{ TEXT(" follow "), true },
+		};
+
+		for (const FLookPhrase& Look : LookPhrases)
+		{
+			const int32 PhraseIdx = Text.Find(Look.Phrase);
+			if (PhraseIdx == INDEX_NONE)
+			{
+				continue;
+			}
+
+			const FString AfterPhrase = Text.Mid(PhraseIdx + FCString::Strlen(Look.Phrase));
+			const FCineSceneActorInfo* LookTarget = ResolveTarget(AfterPhrase, Scene);
+			if (!LookTarget)
+			{
+				continue;
+			}
+
+			OutSegment.LookAtActor = LookTarget->Actor;
+			OutSegment.LookAtLabel = LookTarget->Label;
+			if (Look.bAlsoTrackFocus)
+			{
+				OutSegment.bTrackFocus = true;
+			}
+			bRecognizedAnything = true;
+
+			// The move's own subject should come from the words BEFORE the phrase
+			// ("orbit around the TOWER looking at the knight"), not whichever label
+			// scored best across the whole clause.
+			if (const FCineSceneActorInfo* MoveTarget = ResolveTarget(Text.Left(PhraseIdx), Scene))
+			{
+				OutSegment.TargetActor = MoveTarget->Actor;
+				OutSegment.TargetLabel = MoveTarget->Label;
+			}
+			break;
+		}
 	}
 
 	// ---- Move -------------------------------------------------------------------
@@ -789,6 +872,60 @@ bool FShotGrammarParser::BuildShotPlan(const FString& Description, const FCineSc
 		return false;
 	}
 
+	// ---- Pronouns ------------------------------------------------------------
+	// "it" / "them" refer back to the previous clause's subject: "orbit around
+	// the mask, then push in on it". Runs as a post-pass because each clause is
+	// parsed in isolation.
+	{
+		TWeakObjectPtr<AActor> PrevTarget;
+		FString PrevTargetLabel;
+		for (FCineShotSegment& Segment : OutPlan.Segments)
+		{
+			const bool bHasPronoun = CineDirectorGrammar::ContainsAny(Segment.RawText,
+				{ TEXT("it"), TEXT("them"), TEXT("him"), TEXT("her"), TEXT("they") });
+
+			if (PrevTarget.IsValid() && bHasPronoun)
+			{
+				// "looking at it" / "track it" aims back at the previous subject.
+				if (!Segment.LookAtActor.IsValid() &&
+					CineDirectorGrammar::ContainsAny(Segment.RawText,
+						{ TEXT("looking at it"), TEXT("look at it"), TEXT("aimed at it"), TEXT("aim at it"),
+						  TEXT("watching it"), TEXT("tracking it"), TEXT("track it"), TEXT("following it"), TEXT("follow it"),
+						  TEXT("looking at them"), TEXT("watching them"), TEXT("track them"), TEXT("follow them") }))
+				{
+					Segment.LookAtActor = PrevTarget;
+					Segment.LookAtLabel = PrevTargetLabel;
+					if (CineDirectorGrammar::ContainsAny(Segment.RawText,
+							{ TEXT("tracking it"), TEXT("track it"), TEXT("following it"), TEXT("follow it"), TEXT("watching it"),
+							  TEXT("track them"), TEXT("follow them"), TEXT("watching them") }))
+					{
+						Segment.bTrackFocus = true;
+					}
+				}
+
+				// "orbit around it looking at X": the whole-clause match made X both
+				// pivot and aim — the pronoun says the pivot is the previous subject.
+				const bool bTargetIsJustTheLookAt =
+					Segment.LookAtActor.IsValid() && Segment.TargetActor == Segment.LookAtActor;
+
+				if (!Segment.TargetActor.IsValid() || bTargetIsJustTheLookAt)
+				{
+					Segment.TargetActor = PrevTarget;
+					Segment.TargetLabel = PrevTargetLabel;
+					Segment.bLookAtTarget = true;
+					Segment.ParseNotes.Remove(TEXT("Orbit without a recognizable target — orbiting the point in front of the viewport camera."));
+					Segment.ParseNotes.Add(FString::Printf(TEXT("\"it\" = '%s'"), *PrevTargetLabel));
+				}
+			}
+
+			if (Segment.TargetActor.IsValid())
+			{
+				PrevTarget = Segment.TargetActor;
+				PrevTargetLabel = Segment.TargetLabel;
+			}
+		}
+	}
+
 	// "one take" / "continuous" chains the whole description onto a single camera.
 	const FString LowerDescription = Description.ToLower();
 	if (CineDirectorGrammar::ContainsAny(LowerDescription,
@@ -810,10 +947,15 @@ FText FShotGrammarParser::GetVocabularyHelpText()
 		"  Moves:    orbit / circle around, push in / dolly in, pull back, truck or track left/right,\n"
 		"            crane / boom up or down, pan left/right, tilt up/down, zoom in/out,\n"
 		"            flyover / drone shot, static / locked\n"
-		"  Target:   any actor label from the outliner (\"around the Knight\", \"on the tower\")\n"
+		"  Target:   any actor label from the outliner (\"around the Knight\", \"on the tower\");\n"
+		"            \"it\" / \"them\" refer back to the previous clause's subject\n"
 		"  Framing:  extreme close-up, close-up, medium, wide, establishing\n"
 		"  Angle:    low angle, high angle, overhead / bird's eye, from behind, from the left,\n"
-		"            over the shoulder\n"
+		"            over the shoulder — plain sides are as seen from your current viewport\n"
+		"            (\"front\" = the side you're looking at right now); possessive sides\n"
+		"            (\"its left\", \"their back\", \"behind it\") use the actor's own facing\n"
+		"  Aim:      looking at <actor> (aim the lens at one actor while the move pivots\n"
+		"            on another), track / follow <actor> (aim + keep autofocus locked)\n"
 		"  Lens:     \"50mm\", wide-angle, portrait, telephoto; aperture as \"f/1.8\",\n"
 		"            shallow focus, deep focus\n"
 		"  Focus:    focus on <actor>, rack focus from <actor> to <actor>\n"

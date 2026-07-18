@@ -101,10 +101,26 @@ struct FCineShotSegment
 	TWeakObjectPtr<AActor> RackFocusToActor;
 	FString RackFocusToLabel;
 
+	/**
+	 * Explicit aim target ("orbit around the tower LOOKING AT the knight").
+	 * When set, the lens points here for the whole move even though the move
+	 * itself pivots on / starts from TargetActor.
+	 */
+	TWeakObjectPtr<AActor> LookAtActor;
+	FString LookAtLabel;
+
 	ECineMoveType Move = ECineMoveType::Static;
 	ECineShotSize ShotSize = ECineShotSize::Unspecified;
 	ECineAngle Angle = ECineAngle::EyeLevel;
 	ECineViewSide ViewSide = ECineViewSide::Front;
+
+	/**
+	 * True when the side was phrased possessively ("its left", "their back") and is
+	 * relative to the actor's own root rotation; false means viewport-relative
+	 * ("from the left" = screen left as the user currently sees the actor).
+	 */
+	bool bActorRelativeSide = false;
+
 	ECineEasing Easing = ECineEasing::EaseInOut;
 
 	double DurationSeconds = 5.0;

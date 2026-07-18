@@ -57,6 +57,10 @@ namespace CineDirectorExec
 		/** World-space yaw of (camera - target). */
 		double AzimuthDeg = 0.0;
 		double ElevationDeg = 0.0;
+
+		/** Where the lens points. Defaults to TargetPoint; a "looking at" actor overrides it. */
+		bool bHasLookAt = false;
+		FVector AimPoint = FVector::ZeroVector;
 	};
 
 	/** Camera distance as a multiple of the subject's bounds radius. */
@@ -93,13 +97,34 @@ namespace CineDirectorExec
 			Geo.TargetPoint = Bounds.IsValid ? Bounds.GetCenter() : Target->GetActorLocation();
 			Geo.Radius = Bounds.IsValid ? FMath::Max<double>(Bounds.GetExtent().Size(), 25.0) : 100.0;
 
-			const double FacingYaw = Target->GetActorRotation().Yaw;
+			// Two frames of reference for sides:
+			//  - Possessive ("its left") uses the actor's own root rotation — right
+			//    for characters, whose facing is usually authored correctly.
+			//  - Plain ("from the left") is viewer-relative: "front" is the side of
+			//    the actor facing the editor viewport right now, left/right are
+			//    screen left/right — predictable for props whose root rotation is
+			//    arbitrary.
+			// "Left" swings the azimuth opposite ways because the viewer looks
+			// toward the subject while the actor looks away from its own front.
+			double FacingYaw;
+			double LeftSwingDeg;
+			if (Seg.bActorRelativeSide)
+			{
+				FacingYaw = Target->GetActorRotation().Yaw;
+				LeftSwingDeg = -90.0;
+			}
+			else
+			{
+				const FVector ToViewer = ViewLoc - Geo.TargetPoint;
+				FacingYaw = FMath::RadiansToDegrees(FMath::Atan2(ToViewer.Y, ToViewer.X));
+				LeftSwingDeg = 90.0;
+			}
 			switch (Seg.ViewSide)
 			{
 			case ECineViewSide::Front:        Geo.AzimuthDeg = FacingYaw; break;
 			case ECineViewSide::Behind:       Geo.AzimuthDeg = FacingYaw + 180.0; break;
-			case ECineViewSide::Left:         Geo.AzimuthDeg = FacingYaw - 90.0; break;
-			case ECineViewSide::Right:        Geo.AzimuthDeg = FacingYaw + 90.0; break;
+			case ECineViewSide::Left:         Geo.AzimuthDeg = FacingYaw + LeftSwingDeg; break;
+			case ECineViewSide::Right:        Geo.AzimuthDeg = FacingYaw - LeftSwingDeg; break;
 			case ECineViewSide::OverShoulder: Geo.AzimuthDeg = FacingYaw + 145.0; break;
 			}
 
@@ -133,6 +158,13 @@ namespace CineDirectorExec
 			Geo.ElevationDeg = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(Offset.Z / FMath::Max(Offset.Size(), 1.0), -1.0, 1.0)));
 		}
 
+		Geo.AimPoint = Geo.TargetPoint;
+		if (AActor* LookAt = Seg.LookAtActor.Get())
+		{
+			Geo.AimPoint = ActorCenter(LookAt);
+			Geo.bHasLookAt = true;
+		}
+
 		return Geo;
 	}
 
@@ -163,6 +195,14 @@ namespace CineDirectorExec
 		Geo.Distance = FMath::Max(Offset.Size(), 1.0);
 		Geo.AzimuthDeg = FMath::RadiansToDegrees(FMath::Atan2(Offset.Y, Offset.X));
 		Geo.ElevationDeg = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(Offset.Z / Geo.Distance, -1.0, 1.0)));
+
+		Geo.AimPoint = Geo.TargetPoint;
+		if (AActor* LookAt = Seg.LookAtActor.Get())
+		{
+			Geo.AimPoint = ActorCenter(LookAt);
+			Geo.bHasLookAt = true;
+		}
+
 		return Geo;
 	}
 
@@ -197,12 +237,14 @@ namespace CineDirectorExec
 				Seg.Move == ECineMoveType::TiltUp || Seg.Move == ECineMoveType::TiltDown;
 
 			StartPos = Geo.TargetPoint + SphericalOffset(Geo.AzimuthDeg, Geo.ElevationDeg) * Geo.Distance;
-			StartRot = Geo.bHasTarget ? (Geo.TargetPoint - StartPos).Rotation() : ViewRot;
+			StartRot = (Geo.bHasTarget || Geo.bHasLookAt) ? (Geo.AimPoint - StartPos).Rotation() : ViewRot;
 
 			// Orbits always pivot around the target point, even the target-less
 			// viewport-anchored kind, or the move would read as a weird strafe.
+			// An explicit "looking at" actor always keeps the lens aimed.
 			bAim = !bIsPanTilt &&
 				(bIsOrbit ||
+				 Geo.bHasLookAt ||
 				 (Geo.bHasTarget && Seg.bLookAtTarget) ||
 				 (Seg.Move == ECineMoveType::Flyover && Geo.bHasTarget));
 
@@ -312,7 +354,7 @@ namespace CineDirectorExec
 			}
 			else if (bAim)
 			{
-				Rot = (Geo.TargetPoint - Pos).Rotation();
+				Rot = (Geo.AimPoint - Pos).Rotation();
 			}
 
 			if (Seg.HandheldIntensity > 0.0f)
@@ -954,10 +996,27 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 		FRotator PrevRot = StartRot;
 
 		int32 MoveIndex = 1;
-		for (const FCineShotSegment& Seg : Plan.Segments)
+		for (const FCineShotSegment& SourceSeg : Plan.Segments)
 		{
 			const bool bFirst = (MoveIndex == 1);
+			FCineShotSegment Seg = SourceSeg;
 			const FShotGeometry Geo = bFirst ? FirstGeo : ComputeGeometryChained(Seg, PrevPos, PrevRot);
+
+			// Mid-take framing becomes an implicit dolly: "close up on X" travels to
+			// close-up distance instead of holding still where the last move ended.
+			if (!bFirst && Seg.Move == ECineMoveType::Static && Seg.ShotSize != ECineShotSize::Unspecified && Geo.bHasTarget)
+			{
+				const double LensScale = Seg.FocalLengthMm > 0.0f ? Seg.FocalLengthMm / 35.0 : 1.0;
+				const double WantDist = FMath::Max(Geo.Radius * FramingFactor(Seg.ShotSize) * LensScale, 60.0);
+				const double Delta = Geo.Distance - WantDist;
+				if (FMath::Abs(Delta) > 25.0)
+				{
+					Seg.Move = Delta > 0.0 ? ECineMoveType::DollyIn : ECineMoveType::DollyOut;
+					Seg.MoveAmount = FMath::Abs(Delta);
+					Seg.ParseNotes.Remove(TEXT("No camera move recognized — using a static shot."));
+				}
+			}
+
 			const FShotSampler Sampler(Seg, Geo, bFirst ? ViewRot : PrevRot, /*bInChained*/ !bFirst);
 
 			FVector SegStartPos, SegEndPos;
@@ -998,10 +1057,11 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 				FocusKeys.Emplace(SegStart, (float)FVector::Dist(SegStartPos, ActorCenter(Seg.TargetActor.Get())));
 				FocusKeys.Emplace(SegEnd, (float)FVector::Dist(SegEndPos, ActorCenter(Seg.RackFocusToActor.Get())));
 			}
-			else if (Seg.bTrackFocus && Seg.TargetActor.IsValid() && !bTrackingFocusSet && FocusKeys.Num() == 0)
+			else if (Seg.bTrackFocus && (Seg.LookAtActor.IsValid() || Seg.TargetActor.IsValid()) && !bTrackingFocusSet && FocusKeys.Num() == 0)
 			{
 				Lens->FocusSettings.FocusMethod = ECameraFocusMethod::Tracking;
-				Lens->FocusSettings.TrackingFocusSettings.ActorToTrack = Seg.TargetActor.Get();
+				Lens->FocusSettings.TrackingFocusSettings.ActorToTrack =
+					Seg.LookAtActor.IsValid() ? Seg.LookAtActor.Get() : Seg.TargetActor.Get();
 				bTrackingFocusSet = true;
 			}
 
@@ -1193,10 +1253,11 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 		{
 			Lens->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
 		}
-		else if (Seg.bTrackFocus && Seg.TargetActor.IsValid())
+		else if (Seg.bTrackFocus && (Seg.LookAtActor.IsValid() || Seg.TargetActor.IsValid()))
 		{
 			Lens->FocusSettings.FocusMethod = ECameraFocusMethod::Tracking;
-			Lens->FocusSettings.TrackingFocusSettings.ActorToTrack = Seg.TargetActor.Get();
+			Lens->FocusSettings.TrackingFocusSettings.ActorToTrack =
+				Seg.LookAtActor.IsValid() ? Seg.LookAtActor.Get() : Seg.TargetActor.Get();
 		}
 		else if (Geo.bHasTarget)
 		{
