@@ -103,6 +103,17 @@ namespace
 			Add(TEXT("viseme_PP"), ECineFaceSlot::MouthClose);
 			Add(TEXT("viseme_SS"), ECineFaceSlot::MouthWide, 0.5f);
 			Add(TEXT("viseme_FF"), ECineFaceSlot::MouthPress, 0.6f);
+			// VRM / MMD-style sets: A-I-U-E-O vowel visemes + full-face emotions
+			Add(TEXT("A"), ECineFaceSlot::JawOpen);
+			Add(TEXT("I"), ECineFaceSlot::MouthWide);
+			Add(TEXT("U"), ECineFaceSlot::MouthPucker);
+			Add(TEXT("E"), ECineFaceSlot::MouthWide, 0.6f);
+			Add(TEXT("O"), ECineFaceSlot::MouthFunnel);
+			Add(TEXT("Joy"), ECineFaceSlot::MouthSmile);
+			Add(TEXT("Fun"), ECineFaceSlot::MouthSmile, 0.6f);
+			Add(TEXT("Angry"), ECineFaceSlot::BrowDown);
+			Add(TEXT("Sorrow"), ECineFaceSlot::BrowSad);
+			Add(TEXT("Surprised"), ECineFaceSlot::EyeWide);
 			// Reallusion / Character Creator
 			Add(TEXT("V_Open"), ECineFaceSlot::JawOpen);
 			Add(TEXT("V_Wide"), ECineFaceSlot::MouthWide);
