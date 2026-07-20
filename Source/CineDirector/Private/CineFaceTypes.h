@@ -91,7 +91,8 @@ struct FCineVisemeFrame
 {
 	float Jaw = 0.0f;
 	float Wide = 0.0f;
-	float Pucker = 0.0f;
+	float Pucker = 0.0f;    // rounded OO/UW
+	float Funnel = 0.0f;    // open-round OH (VRM "O")
 	float Close = 0.0f;     // consonant closure (M/B/P)
 	float Sibilant = 0.0f;  // S/SH hiss — teeth together, slightly wide
 };

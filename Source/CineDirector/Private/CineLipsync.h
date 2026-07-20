@@ -23,16 +23,31 @@ public:
 		FString& OutWavPath, FString& OutError);
 
 	/**
-	 * Emphasize the vocal band and suppress steady instrumental beds so lipsync /
-	 * emotion analysis can drive off a song's singing rather than the full mix.
-	 * In-place on mono samples. Does not affect the file imported for playback.
-	 *
-	 * Pipeline: voice-range bandpass (≈120–4000 Hz) → soft noise gate against the
-	 * quietest floor → syllable-rate envelope gate (kills sustained pads/bass that
-	 * lack speech-like modulation). Not a full AI stem split, but enough for most
-	 * pop/rock mixes where the vocal sits in the midrange.
+	 * Fast DSP voice emphasis (bandpass + gate). Fallback when AI stem separation
+	 * is not available. In-place on mono samples; does not affect playback audio.
 	 */
+	static void IsolateVoiceDsp(TArray<float>& InOutMono, int32 SampleRate);
+
+	/** @deprecated Use IsolateVoiceDsp or IsolateVoiceForLipsync. */
 	static void IsolateVoice(TArray<float>& InOutMono, int32 SampleRate);
+
+	/**
+	 * Best-effort vocal isolation for lipsync analysis.
+	 * 1) Try Demucs AI stem separation (if installed) — UVR-class quality.
+	 * 2) Else fall back to IsolateVoiceDsp.
+	 *
+	 * @param SourceAudioPath Original or converted file path (fed to Demucs).
+	 * @param InOutMono       Mix mono samples; replaced with isolated (or blend).
+	 * @param InOutSampleRate Sample rate of InOutMono (may change if AI output differs).
+	 * @param BlendStrength   0 = keep mix, 1 = full isolated vocal.
+	 * @param OutMethod       "demucs", "dsp", or "none".
+	 * @param OutNote         Human-readable status (install hint, cache hit, etc.).
+	 */
+	static void IsolateVoiceForLipsync(const FString& SourceAudioPath, TArray<float>& InOutMono,
+		int32& InOutSampleRate, float BlendStrength, FString& OutMethod, FString& OutNote);
+
+	/** True if a Demucs CLI entry point was found (python -m demucs or demucs.exe). */
+	static bool IsDemucsAvailable();
 
 	static TArray<FCineVisemeFrame> AnalyzeAudio(const TArray<float>& Mono, int32 SampleRate, int32 Fps = 30);
 

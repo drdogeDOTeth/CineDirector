@@ -5,6 +5,7 @@
 #include "CineFaceAnalyzer.h"
 #include "CineFaceBaker.h"
 #include "CineLipsync.h"
+#include "Templates/Function.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "DesktopPlatformModule.h"
 #include "Editor.h"
@@ -15,9 +16,11 @@
 #include "Selection.h"
 #include "Sound/SoundWave.h"
 #include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SSlider.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -44,6 +47,41 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 			[
 				Content
+			];
+	};
+
+	// Note: do not capture float& parameters into long-lived lambdas — they dangle
+	// after Construct returns. Bind explicitly through `this` members.
+	auto MakeStrengthSlider = [this](
+		TSharedPtr<STextBlock>& ValueLabel,
+		TFunction<float()> GetValue,
+		TFunction<void(float)> SetValue,
+		float MinV,
+		float MaxV,
+		const FText& Tooltip) -> TSharedRef<SWidget>
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+			[
+				SNew(SSlider)
+				.ToolTipText(Tooltip)
+				.Value_Lambda([GetValue]() { return GetValue(); })
+				.OnValueChanged_Lambda([this, SetValue](float V)
+				{
+					SetValue(V);
+					RefreshSliderLabels();
+				})
+				.MinValue(MinV)
+				.MaxValue(MaxV)
+				.StepSize(0.05f)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(42.0f)
+				[
+					SAssignNew(ValueLabel, STextBlock)
+					.Justification(ETextJustify::Right)
+				]
 			];
 	};
 
@@ -138,12 +176,55 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 					SAssignNew(IsolateVoiceCheck, SCheckBox)
 					.IsChecked(ECheckBoxState::Checked)
 					.ToolTipText(LOCTEXT("IsolateVoiceTip",
-						"For songs/mixes: emphasize the vocal band and suppress steady instrumentals before lipsync and emotion analysis. "
-						"The full audio is still placed on the sequence for playback. Turn off for clean dialogue if you prefer."))
+						"For songs: pull vocals for lipsync. Uses Demucs AI stem separation when installed "
+						"(pip install demucs), otherwise a fast DSP fallback. Full mix still plays on the sequence. "
+						"Isolation Strength blends mix → isolated vocal. Results are cached under Saved/CineDirectorFace/Stems."))
 					[
 						SNew(STextBlock).Text(LOCTEXT("IsolateVoice", "Isolate voice"))
 					]
 				])
+		]
+
+		// --- Strength sliders ---
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 2.0f)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("StrengthHeader", "Strength"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+		]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("MouthStrLabel", "Mouth"),
+				MakeStrengthSlider(
+					MouthStrengthLabel,
+					[this]() { return MouthStrength; },
+					[this](float V) { MouthStrength = V; },
+					0.0f, 2.0f,
+					LOCTEXT("MouthStrTip", "How far lipsync jaw / A-I-U-O shapes travel. 0 = no mouth motion, 1 = default, 2 = maxed.")))
+		]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("EmotionStrLabel", "Emotion"),
+				MakeStrengthSlider(
+					EmotionStrengthLabel,
+					[this]() { return EmotionStrength; },
+					[this](float V) { EmotionStrength = V; },
+					0.0f, 2.0f,
+					LOCTEXT("EmotionStrTip", "How strong brows / full-face Joy-Angry-Sorrow-Surprised poses are. 0 = no emotion, 1 = default, 2 = maxed.")))
+		]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("IsoStrLabel", "Isolation"),
+				MakeStrengthSlider(
+					IsolateStrengthLabel,
+					[this]() { return IsolateStrength; },
+					[this](float V) { IsolateStrength = V; },
+					0.0f, 1.0f,
+					LOCTEXT("IsoStrTip", "How hard Isolate voice filters music. 0 = raw mix, 1 = full isolation. Only used when Isolate voice is checked.")))
 		]
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 2.0f)
@@ -161,6 +242,24 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 			.AutoWrapText(true)
 		]
 	];
+
+	RefreshSliderLabels();
+}
+
+void SCineDirectorFacePanel::RefreshSliderLabels()
+{
+	if (MouthStrengthLabel.IsValid())
+	{
+		MouthStrengthLabel->SetText(FText::FromString(FString::Printf(TEXT("%.2f"), MouthStrength)));
+	}
+	if (EmotionStrengthLabel.IsValid())
+	{
+		EmotionStrengthLabel->SetText(FText::FromString(FString::Printf(TEXT("%.2f"), EmotionStrength)));
+	}
+	if (IsolateStrengthLabel.IsValid())
+	{
+		IsolateStrengthLabel->SetText(FText::FromString(FString::Printf(TEXT("%.2f"), IsolateStrength)));
+	}
 }
 
 FReply SCineDirectorFacePanel::OnUseSelectedActor()
@@ -270,6 +369,8 @@ FReply SCineDirectorFacePanel::OnGenerate()
 	const FString ManualEmotion = EmotionBox->GetText().ToString().TrimStartAndEnd();
 	Request.EmotionText = ManualEmotion;
 	Request.bAutoBlink = BlinkCheck->IsChecked();
+	Request.MouthStrength = MouthStrength;
+	Request.EmotionStrength = EmotionStrength;
 	Request.DurationSeconds = FMath::Clamp(FCString::Atof(*DurationBox->GetText().ToString()), 0.5f, 600.0f);
 	if (Request.DurationSeconds < 0.51f)
 	{
@@ -280,6 +381,7 @@ FReply SCineDirectorFacePanel::OnGenerate()
 	USoundWave* Sound = nullptr;
 	FString Error;
 	bool bEmotionFromAudio = false;
+	FString IsoMethod, IsoNote;
 
 	if (!AudioPath.IsEmpty())
 	{
@@ -293,27 +395,39 @@ FReply SCineDirectorFacePanel::OnGenerate()
 		}
 		Request.DurationSeconds = (float)Samples.Num() / FMath::Max(1, SampleRate);
 
-		// Analysis copy: optionally isolate vocals so songs don't drive off drums/bass.
-		// Playback still uses the original WavPath so the full mix is heard.
-		TArray<float> AnalysisSamples = Samples;
+		// Isolation is for lipsync only. Emotion auto-detect uses the raw mix.
+		// Prefer Demucs AI stems when installed; otherwise fast DSP.
+		TArray<float> LipSamples = Samples;
+		int32 LipRate = SampleRate;
 		const bool bIsolated = IsolateVoiceCheck.IsValid() && IsolateVoiceCheck->IsChecked();
-		if (bIsolated)
+		if (bIsolated && IsolateStrength > 0.01f)
 		{
-			FCineLipsync::IsolateVoice(AnalysisSamples, SampleRate);
+			SetStatus(TEXT("Isolating vocals… (Demucs AI if installed, else fast DSP — first AI run can take a few minutes)"), false);
+			// Use converted wav when available (PCM) so Demucs always gets a clean path.
+			const FString StemSource = !WavPath.IsEmpty() ? WavPath : AudioPath;
+			FCineLipsync::IsolateVoiceForLipsync(StemSource, LipSamples, LipRate,
+				IsolateStrength, IsoMethod, IsoNote);
 		}
 
 		if (TalkingCheck->IsChecked())
 		{
-			Request.Visemes = FCineLipsync::AnalyzeAudio(AnalysisSamples, SampleRate);
+			Request.Visemes = FCineLipsync::AnalyzeAudio(LipSamples, LipRate);
 		}
-		// Auto-pick emotion from the dialogue when the user left the box blank.
+		// Auto-pick emotion from the raw dialogue (full dynamics).
+		// Always fill something when the box is blank so faces never stay neutral.
 		if (ManualEmotion.IsEmpty())
 		{
-			const FString Estimated = FCineLipsync::EstimateEmotionFromAudio(AnalysisSamples, SampleRate);
-			if (!Estimated.IsEmpty())
+			FString Estimated = FCineLipsync::EstimateEmotionFromAudio(Samples, SampleRate);
+			if (Estimated.IsEmpty())
 			{
-				Request.EmotionText = Estimated;
-				bEmotionFromAudio = true;
+				Estimated = TEXT("happy");
+			}
+			Request.EmotionText = Estimated;
+			bEmotionFromAudio = true;
+			// Show what auto picked so the user can see/edit it.
+			if (EmotionBox.IsValid())
+			{
+				EmotionBox->SetText(FText::FromString(Estimated));
 			}
 		}
 		Sound = FCineFaceBaker::ImportAudioAsset(WavPath, Error);
@@ -344,15 +458,24 @@ FReply SCineDirectorFacePanel::OnGenerate()
 		? FString()
 		: FString::Printf(TEXT(" (%s%s)"), bEmotionFromAudio ? TEXT("auto: ") : TEXT(""), *Request.EmotionText);
 
-	const bool bIsolated = !AudioPath.IsEmpty() && IsolateVoiceCheck.IsValid() && IsolateVoiceCheck->IsChecked();
+	FString IsoTag;
+	if (!IsoMethod.IsEmpty() && IsoMethod != TEXT("none"))
+	{
+		IsoTag = FString::Printf(TEXT(" [iso:%s %.2f]"), *IsoMethod, IsolateStrength);
+		if (!IsoNote.IsEmpty())
+		{
+			IsoTag += TEXT(" — ") + IsoNote;
+		}
+	}
 	SetStatus(FString::Printf(
-		TEXT("Done: %s — %.1fs of %s%s%s layered onto '%s' at the sequence start. %s"),
+		TEXT("Done: %s — %.1fs of %s%s%s | mouth %.2f emotion %.2f layered onto '%s'. %s"),
 		*FaceAnim->GetName(), Request.DurationSeconds,
 		Request.Visemes.Num() > 0 ? (AudioPath.IsEmpty() ? TEXT("procedural talking") : TEXT("audio-driven lipsync")) : TEXT("expression"),
-		bIsolated ? TEXT(" [voice-isolated]") : TEXT(""),
+		*IsoTag,
 		*EmotionNote,
+		MouthStrength, EmotionStrength,
 		*Actor->GetActorLabel(),
-		Sound ? TEXT("Audio placed on the sequence's audio track.") : TEXT("")));
+		Sound ? TEXT("Audio on sequence track.") : TEXT("")));
 	return FReply::Handled();
 }
 

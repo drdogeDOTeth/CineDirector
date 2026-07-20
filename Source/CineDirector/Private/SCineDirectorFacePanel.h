@@ -10,6 +10,7 @@
 class AActor;
 class SCheckBox;
 class SEditableTextBox;
+class SSlider;
 class STextBlock;
 class USkeletalMesh;
 
@@ -34,6 +35,7 @@ private:
 
 	USkeletalMesh* GetTargetMesh() const;
 	void SetStatus(const FString& Message, bool bIsError = false);
+	void RefreshSliderLabels();
 
 	TWeakObjectPtr<AActor> TargetActor;
 	TSharedPtr<STextBlock> TargetLabel;
@@ -44,4 +46,14 @@ private:
 	TSharedPtr<SCheckBox> BlinkCheck;
 	TSharedPtr<SCheckBox> IsolateVoiceCheck;
 	TSharedPtr<STextBlock> StatusBlock;
+
+	// Tuning sliders (persisted for the editor session).
+	float MouthStrength = 1.3f;
+	/** 1.0 = full pose table; >1 pushes harder (clamped in baker). */
+	float EmotionStrength = 1.0f;
+	float IsolateStrength = 0.75f; // 0 = raw audio, 1 = full isolation blend
+
+	TSharedPtr<STextBlock> MouthStrengthLabel;
+	TSharedPtr<STextBlock> EmotionStrengthLabel;
+	TSharedPtr<STextBlock> IsolateStrengthLabel;
 };

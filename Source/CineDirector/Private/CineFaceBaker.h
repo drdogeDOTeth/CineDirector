@@ -29,6 +29,15 @@ struct FCineFaceBakeRequest
 	bool bAutoBlink = true;
 	float DurationSeconds = 6.0f;
 	int32 Fps = 30;
+
+	/**
+	 * Multipliers from the panel sliders (1.0 = baked defaults).
+	 * MouthStrength scales lipsync jaw/shape travel.
+	 * EmotionStrength scales brows / full-face Expr* poses.
+	 */
+	float MouthStrength = 1.3f;
+	/** 1.0 = full pose table values; 0 = off; 2 = maxed. */
+	float EmotionStrength = 1.0f;
 };
 
 /**

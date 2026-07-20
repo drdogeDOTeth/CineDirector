@@ -3,10 +3,13 @@
 #include "CineLipsync.h"
 
 #include "CineRenderLauncher.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "Math/RandomStream.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCineDirectorLipsync, Log, All);
 
@@ -187,7 +190,305 @@ bool FCineLipsync::LoadAudioMono(const FString& Path, TArray<float>& OutSamples,
 	return ParseWav(Bytes, OutSamples, OutSampleRate, OutError);
 }
 
+namespace
+{
+	FString FindPythonExecutable()
+	{
+		// Prefer known install paths first (Scripts often not on PATH after winget).
+		const FString LocalApp = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+		const FString UserProfile = FPlatformMisc::GetEnvironmentVariable(TEXT("USERPROFILE"));
+		const TCHAR* Known[] = {
+			TEXT("Programs\\Python\\Python312\\python.exe"),
+			TEXT("Programs\\Python\\Python313\\python.exe"),
+			TEXT("Programs\\Python\\Python311\\python.exe"),
+			TEXT("Programs\\Python\\Python310\\python.exe"),
+			TEXT("anaconda3\\python.exe"),
+			TEXT("miniconda3\\python.exe"),
+		};
+		for (const TCHAR* Rel : Known)
+		{
+			const FString P1 = FPaths::Combine(LocalApp, Rel);
+			const FString P2 = FPaths::Combine(UserProfile, Rel);
+			if (FPaths::FileExists(P1)) return P1;
+			if (FPaths::FileExists(P2)) return P2;
+		}
+
+		// Prefer real interpreters; skip broken Windows Store stubs.
+		const TCHAR* Candidates[] = { TEXT("python"), TEXT("python3"), TEXT("py") };
+		for (const TCHAR* Name : Candidates)
+		{
+			int32 Code = -1;
+			FString Out, Err;
+			if (FCString::Strcmp(Name, TEXT("py")) == 0)
+			{
+				FPlatformProcess::ExecProcess(TEXT("py"), TEXT("-3 -c \"import sys; print(sys.executable)\""), &Code, &Out, &Err);
+			}
+			else
+			{
+				FPlatformProcess::ExecProcess(Name, TEXT("-c \"import sys; print(sys.executable)\""), &Code, &Out, &Err);
+			}
+			if (Code == 0)
+			{
+				FString Exe = Out.TrimStartAndEnd();
+				int32 Nl = INDEX_NONE;
+				if (Exe.FindChar(TEXT('\n'), Nl))
+				{
+					Exe.LeftInline(Nl);
+					Exe.TrimStartAndEndInline();
+				}
+				if (!Exe.IsEmpty() && !Exe.Contains(TEXT("WindowsApps")) && FPaths::FileExists(Exe))
+				{
+					return Exe;
+				}
+			}
+		}
+		return FString();
+	}
+
+	bool DemucsModuleImportable(const FString& PythonExe)
+	{
+		int32 Code = -1;
+		FString Out, Err;
+		FPlatformProcess::ExecProcess(*PythonExe, TEXT("-c \"import demucs; print('ok')\""), &Code, &Out, &Err);
+		return Code == 0 && Out.Contains(TEXT("ok"));
+	}
+
+	FString FindDemucsExe()
+	{
+		const FString LocalApp = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+		const FString ScriptsDemucs = FPaths::Combine(LocalApp, TEXT("Programs\\Python\\Python312\\Scripts\\demucs.exe"));
+		if (FPaths::FileExists(ScriptsDemucs))
+		{
+			return ScriptsDemucs;
+		}
+
+		int32 Code = -1;
+		FString Out, Err;
+		FPlatformProcess::ExecProcess(TEXT("where"), TEXT("demucs"), &Code, &Out, &Err);
+		if (Code == 0)
+		{
+			FString Line = Out.TrimStartAndEnd();
+			int32 Nl = INDEX_NONE;
+			if (Line.FindChar(TEXT('\n'), Nl))
+			{
+				Line.LeftInline(Nl);
+				Line.TrimStartAndEndInline();
+			}
+			if (FPaths::FileExists(Line))
+			{
+				return Line;
+			}
+		}
+		return FString();
+	}
+
+	FString MakeStemCacheKey(const FString& InputPath)
+	{
+		const int64 Size = IFileManager::Get().FileSize(*InputPath);
+		const FDateTime Stamp = IFileManager::Get().GetTimeStamp(*InputPath);
+		const FString Raw = FString::Printf(TEXT("%s|%lld|%s"), *FPaths::ConvertRelativePathToFull(InputPath),
+			Size, *Stamp.ToString());
+		return FMD5::HashAnsiString(*Raw);
+	}
+}
+
+bool FCineLipsync::IsDemucsAvailable()
+{
+	if (!FindDemucsExe().IsEmpty())
+	{
+		return true;
+	}
+	const FString Py = FindPythonExecutable();
+	return !Py.IsEmpty() && DemucsModuleImportable(Py);
+}
+
+void FCineLipsync::IsolateVoiceForLipsync(const FString& SourceAudioPath, TArray<float>& InOutMono,
+	int32& InOutSampleRate, float BlendStrength, FString& OutMethod, FString& OutNote)
+{
+	OutMethod = TEXT("none");
+	OutNote.Empty();
+	const float W = FMath::Clamp(BlendStrength, 0.0f, 1.0f);
+	if (W <= 0.01f || InOutMono.Num() < 32)
+	{
+		OutNote = TEXT("isolation blend at 0 — using full mix");
+		return;
+	}
+
+	TArray<float> Original = InOutMono;
+	const int32 OriginalRate = InOutSampleRate;
+
+	// --- 1) Demucs AI stem split (cached) ---
+	// Windows + song titles with spaces/& break Demucs path handling, so we always
+	// copy the source to a short ASCII-only job folder and run with that CWD.
+	FString VocalsPath;
+	FString AiError;
+	bool bAiOk = false;
+	const FString AbsSource = FPaths::ConvertRelativePathToFull(SourceAudioPath);
+	if (FPaths::FileExists(AbsSource))
+	{
+		const FString CacheRoot = FPaths::ConvertRelativePathToFull(
+			FPaths::ProjectSavedDir() / TEXT("CineDirectorFace") / TEXT("Stems"));
+		const FString Key = MakeStemCacheKey(AbsSource);
+		// Keep path short: hash only, no song title folders.
+		const FString JobDir = CacheRoot / Key;
+		const FString SafeInput = JobDir / TEXT("input.wav");
+		const FString SafeOutRel = TEXT("out"); // relative to JobDir
+		IFileManager::Get().MakeDirectory(*JobDir, true);
+
+		// Look for a previous vocals.wav under this job dir.
+		TArray<FString> Found;
+		IFileManager::Get().FindFilesRecursive(Found, *JobDir, TEXT("vocals.wav"), true, false);
+		if (Found.Num() > 0)
+		{
+			VocalsPath = Found[0];
+			bAiOk = true;
+			OutNote = TEXT("Demucs cache hit");
+		}
+		else
+		{
+			// Copy source → input.wav (avoids spaces, commas, & in path).
+			if (!FPaths::FileExists(SafeInput))
+			{
+				const uint32 CopyResult = IFileManager::Get().Copy(*SafeInput, *AbsSource);
+				if (CopyResult != COPY_OK)
+				{
+					AiError = FString::Printf(TEXT("Could not stage audio for Demucs (copy code %u)"), CopyResult);
+				}
+			}
+
+			if (AiError.IsEmpty() && FPaths::FileExists(SafeInput))
+			{
+				const FString DemucsExe = FindDemucsExe();
+				const FString PythonExe = FindPythonExecutable();
+				FString Cmd, Args;
+				// Relative paths + working directory = no OneDrive/space/& path bugs.
+				// -d cuda uses the GPU when PyTorch CUDA is installed.
+				if (!DemucsExe.IsEmpty())
+				{
+					Cmd = DemucsExe;
+					Args = FString::Printf(
+						TEXT("-n htdemucs --two-stems=vocals -d cuda -o %s input.wav"), *SafeOutRel);
+				}
+				else if (!PythonExe.IsEmpty() && DemucsModuleImportable(PythonExe))
+				{
+					Cmd = PythonExe;
+					Args = FString::Printf(
+						TEXT("-m demucs -n htdemucs --two-stems=vocals -d cuda -o %s input.wav"), *SafeOutRel);
+				}
+
+				if (!Cmd.IsEmpty())
+				{
+					OutNote = TEXT("Running Demucs on GPU (first time can take a few minutes)…");
+					UE_LOG(LogCineDirectorLipsync, Log, TEXT("Demucs cwd=%s | %s %s"), *JobDir, *Cmd, *Args);
+					int32 Code = -1;
+					FString StdOut, StdErr;
+					// OptionalWorkingDirectory keeps Demucs off relative ..\..\Users\... paths.
+					FPlatformProcess::ExecProcess(*Cmd, *Args, &Code, &StdOut, &StdErr, *JobDir);
+					// If CUDA fails (CPU-only torch), retry without -d cuda.
+					if (Code != 0)
+					{
+						UE_LOG(LogCineDirectorLipsync, Warning,
+							TEXT("Demucs cuda run failed (code %d), retrying on default device…\n%s"),
+							Code, *StdErr.Right(400));
+						if (!DemucsExe.IsEmpty())
+						{
+							Args = FString::Printf(
+								TEXT("-n htdemucs --two-stems=vocals -o %s input.wav"), *SafeOutRel);
+						}
+						else
+						{
+							Args = FString::Printf(
+								TEXT("-m demucs -n htdemucs --two-stems=vocals -o %s input.wav"), *SafeOutRel);
+						}
+						Code = -1;
+						StdOut.Empty();
+						StdErr.Empty();
+						FPlatformProcess::ExecProcess(*Cmd, *Args, &Code, &StdOut, &StdErr, *JobDir);
+					}
+
+					Found.Reset();
+					IFileManager::Get().FindFilesRecursive(Found, *JobDir, TEXT("vocals.wav"), true, false);
+					if (Code == 0 && Found.Num() > 0)
+					{
+						VocalsPath = Found[0];
+						bAiOk = true;
+						OutNote = TEXT("Demucs AI vocals");
+					}
+					else
+					{
+						AiError = FString::Printf(TEXT("Demucs failed (code %d): %s"), Code, *StdErr.Right(500));
+						UE_LOG(LogCineDirectorLipsync, Warning, TEXT("%s\nstdout: %s"), *AiError, *StdOut.Right(300));
+					}
+				}
+				else
+				{
+					AiError = TEXT("Demucs not found. Install with: pip install demucs  (needs a real Python, not the Store stub)");
+				}
+			}
+		}
+	}
+
+	if (bAiOk && !VocalsPath.IsEmpty())
+	{
+		TArray<float> VocalMono;
+		int32 VocalRate = 0;
+		FString WavUsed, LoadErr;
+		if (LoadAudioMono(VocalsPath, VocalMono, VocalRate, WavUsed, LoadErr) && VocalMono.Num() > 0)
+		{
+			// Resample-ish: if rates match, blend sample-wise; else use vocals only.
+			if (VocalRate == OriginalRate && VocalMono.Num() > 0)
+			{
+				const int32 N = FMath::Min(Original.Num(), VocalMono.Num());
+				InOutMono.SetNum(N);
+				for (int32 i = 0; i < N; ++i)
+				{
+					InOutMono[i] = FMath::Lerp(Original[i], VocalMono[i], W);
+				}
+				InOutSampleRate = OriginalRate;
+			}
+			else
+			{
+				// Prefer AI vocals when rates differ (blend against silence on original side is wrong).
+				InOutMono = MoveTemp(VocalMono);
+				InOutSampleRate = VocalRate;
+				if (W < 0.99f)
+				{
+					// Soften toward zero instead of the mix when rates mismatch.
+					for (float& S : InOutMono) { S *= W; }
+				}
+			}
+			OutMethod = TEXT("demucs");
+			if (!OutNote.Contains(TEXT("cache")))
+			{
+				OutNote = TEXT("Demucs AI vocals");
+			}
+			return;
+		}
+		AiError = LoadErr.IsEmpty() ? TEXT("Could not load Demucs vocals.wav") : LoadErr;
+	}
+
+	// --- 2) DSP fallback ---
+	TArray<float> Dsp = Original;
+	IsolateVoiceDsp(Dsp, OriginalRate);
+	const int32 N = FMath::Min(Original.Num(), Dsp.Num());
+	InOutMono.SetNum(N);
+	for (int32 i = 0; i < N; ++i)
+	{
+		InOutMono[i] = FMath::Lerp(Original[i], Dsp[i], W);
+	}
+	InOutSampleRate = OriginalRate;
+	OutMethod = TEXT("dsp");
+	OutNote = AiError.IsEmpty()
+		? TEXT("Fast DSP isolate (install Demucs for AI stems: pip install demucs)")
+		: FString::Printf(TEXT("DSP fallback — %s"), *AiError);
+}
+
 void FCineLipsync::IsolateVoice(TArray<float>& InOutMono, int32 SampleRate)
+{
+	IsolateVoiceDsp(InOutMono, SampleRate);
+}
+
+void FCineLipsync::IsolateVoiceDsp(TArray<float>& InOutMono, int32 SampleRate)
 {
 	if (InOutMono.Num() < 32 || SampleRate <= 0)
 	{
@@ -196,10 +497,10 @@ void FCineLipsync::IsolateVoice(TArray<float>& InOutMono, int32 SampleRate)
 
 	const int32 N = InOutMono.Num();
 
-	// --- 1) Cascaded one-pole highpass (~120 Hz) then lowpass (~4000 Hz).
-	// Kills kick/sub and extreme high-hat air so the vocal formant band dominates.
-	const float HpCutoff = 120.0f;
-	const float LpCutoff = 4000.0f;
+	// Vocal bandpass: 2x HP @ 110 Hz, LP @ 4200 Hz — enough to drop kick/sub
+	// without gutting clean acapella body.
+	const float HpCutoff = 110.0f;
+	const float LpCutoff = 4200.0f;
 	const float HpRC = 1.0f / (2.0f * PI * HpCutoff);
 	const float LpRC = 1.0f / (2.0f * PI * LpCutoff);
 	const float Dt = 1.0f / (float)SampleRate;
@@ -210,11 +511,7 @@ void FCineLipsync::IsolateVoice(TArray<float>& InOutMono, int32 SampleRate)
 	Filtered.SetNumUninitialized(N);
 	{
 		float PrevIn = InOutMono[0];
-		float Hp = 0.0f;
-		float Lp = 0.0f;
-		// Two cascaded HP stages for steeper bass rejection.
-		float Hp2 = 0.0f;
-		float PrevHp = 0.0f;
+		float Hp = 0.0f, Hp2 = 0.0f, PrevHp = 0.0f, Lp = 0.0f;
 		for (int32 i = 0; i < N; ++i)
 		{
 			const float In = InOutMono[i];
@@ -227,35 +524,43 @@ void FCineLipsync::IsolateVoice(TArray<float>& InOutMono, int32 SampleRate)
 		}
 	}
 
-	// --- 2) Frame-wise energy + soft noise gate (against quietest ~15%).
 	const int32 Hop = FMath::Max(1, SampleRate / 100); // 10 ms
 	const int32 NumFrames = FMath::Max(1, N / Hop);
-	TArray<float> FrameRms;
+	TArray<float> FrameRms, FormantRatio;
 	FrameRms.SetNumZeroed(NumFrames);
+	FormantRatio.SetNumZeroed(NumFrames);
 	float Peak = 1e-6f;
 	for (int32 f = 0; f < NumFrames; ++f)
 	{
 		const int32 Start = f * Hop;
-		const int32 Count = FMath::Min(Hop, N - Start);
+		const int32 Count = FMath::Min(Hop * 2, N - Start);
+		const float* S = Filtered.GetData() + Start;
 		double SumSq = 0.0;
 		for (int32 i = 0; i < Count; ++i)
 		{
-			const float S = Filtered[Start + i];
-			SumSq += S * S;
+			SumSq += S[i] * S[i];
 		}
 		const float Rms = FMath::Sqrt((float)(SumSq / FMath::Max(1, Count)));
 		FrameRms[f] = Rms;
 		Peak = FMath::Max(Peak, Rms);
+
+		const float Low = BandPower(S, Count, SampleRate, 200.0f);
+		const float Form =
+			BandPower(S, Count, SampleRate, 600.0f) +
+			BandPower(S, Count, SampleRate, 1200.0f) +
+			BandPower(S, Count, SampleRate, 2200.0f);
+		const float High = BandPower(S, Count, SampleRate, 5000.0f);
+		FormantRatio[f] = Form / (Low + Form + High + 1e-9f);
 	}
 
 	TArray<float> Sorted = FrameRms;
 	Sorted.Sort();
 	const float Floor = Sorted[FMath::Clamp(Sorted.Num() / 7, 0, Sorted.Num() - 1)];
-	const float GateOpen = FMath::Max(Peak * 0.06f, Floor * 2.2f);
-	const float GateClose = GateOpen * 0.45f;
+	// Slightly stricter than the original, still open enough for clean vocals.
+	const float GateOpen = FMath::Max(Peak * 0.075f, Floor * 2.5f);
+	const float GateClose = GateOpen * 0.42f;
 
-	// --- 3) Syllable-rate modulation gate: sustained pads/bass have steady energy;
-	//      singing/speech modulates ~2–8 Hz. Keep frames that wiggle like a voice.
+	// Syllable-rate modulation
 	TArray<float> Env;
 	Env.SetNum(NumFrames);
 	float SmoothE = 0.0f;
@@ -266,34 +571,40 @@ void FCineLipsync::IsolateVoice(TArray<float>& InOutMono, int32 SampleRate)
 	}
 	TArray<float> Modulation;
 	Modulation.SetNum(NumFrames);
-	for (int32 f = 0; f < NumFrames; ++f)
-	{
-		// Absolute derivative of the envelope ≈ syllable attack energy.
-		const float Prev = Env[FMath::Max(0, f - 1)];
-		const float Next = Env[FMath::Min(NumFrames - 1, f + 1)];
-		Modulation[f] = FMath::Abs(Next - Prev);
-	}
-	// Smooth modulation and normalize.
 	float PeakMod = 1e-6f;
 	float PrevM = 0.0f;
 	for (int32 f = 0; f < NumFrames; ++f)
 	{
-		PrevM = PrevM * 0.6f + Modulation[f] * 0.4f;
+		const float D = FMath::Abs(Env[FMath::Min(NumFrames - 1, f + 1)] - Env[FMath::Max(0, f - 1)]);
+		PrevM = PrevM * 0.6f + D * 0.4f;
 		Modulation[f] = PrevM;
 		PeakMod = FMath::Max(PeakMod, PrevM);
 	}
-	for (float& M : Modulation)
+	for (float& M : Modulation) { M /= PeakMod; }
+
+	// Local bed (continuous instruments under the vocal)
+	TArray<float> Bed;
+	Bed.SetNum(NumFrames);
 	{
-		M /= PeakMod;
+		const int32 BedHalf = FMath::Max(1, SampleRate / Hop / 3);
+		for (int32 f = 0; f < NumFrames; ++f)
+		{
+			const int32 A = FMath::Max(0, f - BedHalf);
+			const int32 B = FMath::Min(NumFrames - 1, f + BedHalf);
+			float MinE = FrameRms[f];
+			for (int32 i = A; i <= B; i += 2)
+			{
+				MinE = FMath::Min(MinE, FrameRms[i]);
+			}
+			Bed[f] = MinE;
+		}
 	}
 
-	// Build per-sample gain (linear interp across frames).
 	TArray<float> Gain;
 	Gain.SetNum(NumFrames);
 	float PrevGain = 0.0f;
 	for (int32 f = 0; f < NumFrames; ++f)
 	{
-		// Energy gate
 		float G = 0.0f;
 		if (FrameRms[f] >= GateOpen)
 		{
@@ -303,16 +614,25 @@ void FCineLipsync::IsolateVoice(TArray<float>& InOutMono, int32 SampleRate)
 		{
 			G = (FrameRms[f] - GateClose) / FMath::Max(1e-6f, GateOpen - GateClose);
 		}
-		// Modulation boost: steady instruments stay quieter; voice opens up.
-		const float ModBoost = 0.25f + 0.75f * FMath::Clamp(Modulation[f] * 1.6f, 0.0f, 1.0f);
+
+		// Soft bed gate — leave a healthy floor so quiet phrases still pass.
+		const float AboveBed = FMath::Max(0.0f, FrameRms[f] - Bed[f] * 1.15f);
+		const float BedGate = FMath::Clamp(AboveBed / FMath::Max(GateOpen * 0.4f, 1e-6f), 0.35f, 1.0f);
+		G = FMath::Min(G, BedGate);
+
+		// Steady beds quieter; floor high enough that clean speech never goes silent.
+		const float ModBoost = 0.35f + 0.65f * FMath::Clamp(Modulation[f] * 1.5f, 0.0f, 1.0f);
 		G *= ModBoost;
-		// Mild attack/release on the gate itself
-		const float Alpha = G > PrevGain ? 0.55f : 0.18f;
+
+		// Mild formant preference (floor 0.55 — never crush acapella).
+		const float FormBoost = FMath::Clamp((FormantRatio[f] - 0.22f) / 0.45f, 0.55f, 1.0f);
+		G *= FormBoost;
+
+		const float Alpha = G > PrevGain ? 0.55f : 0.22f;
 		PrevGain = PrevGain + (G - PrevGain) * Alpha;
-		Gain[f] = PrevGain;
+		Gain[f] = FMath::Clamp(PrevGain, 0.0f, 1.0f);
 	}
 
-	// Apply + normalize to original peak-ish level so lipsync thresholds still work.
 	float OutPeak = 1e-6f;
 	for (int32 i = 0; i < N; ++i)
 	{
@@ -321,13 +641,15 @@ void FCineLipsync::IsolateVoice(TArray<float>& InOutMono, int32 SampleRate)
 		const int32 F1 = FMath::Min(F0 + 1, NumFrames - 1);
 		const float Frac = FMath::Clamp(T - F0, 0.0f, 1.0f);
 		const float G = FMath::Lerp(Gain[F0], Gain[F1], Frac);
-		const float S = Filtered[i] * G;
+		const float BedG = FMath::Lerp(Bed[F0], Bed[F1], Frac);
+		// Cap bed attenuation so we only dip residual music, not the vocal.
+		const float BedAtten = 1.0f - FMath::Clamp(BedG / FMath::Max(Peak, 1e-6f), 0.0f, 0.30f);
+		const float S = Filtered[i] * G * BedAtten;
 		InOutMono[i] = S;
 		OutPeak = FMath::Max(OutPeak, FMath::Abs(S));
 	}
 
-	// Match roughly to 0.7 peak so quiet vocals after gating aren't buried.
-	const float TargetPeak = 0.7f;
+	const float TargetPeak = 0.75f;
 	if (OutPeak > 1e-5f)
 	{
 		const float Scale = TargetPeak / OutPeak;
@@ -338,7 +660,7 @@ void FCineLipsync::IsolateVoice(TArray<float>& InOutMono, int32 SampleRate)
 	}
 
 	UE_LOG(LogCineDirectorLipsync, Log,
-		TEXT("IsolateVoice: %d samples @ %d Hz, floor=%.5f gate=%.5f peakMod=%.5f"),
+		TEXT("IsolateVoiceDsp: %d samples @ %d Hz, floor=%.5f gate=%.5f peakMod=%.5f"),
 		N, SampleRate, Floor, GateOpen, PeakMod);
 }
 
@@ -355,9 +677,10 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 	const int32 NumFrames = FMath::Max(1, Mono.Num() / Hop);
 	Frames.SetNum(NumFrames);
 
-	TArray<float> Energy, LowRatio, HighRatio, Sibilance;
+	TArray<float> Energy, LowRatio, MidRatio, HighRatio, Sibilance;
 	Energy.SetNumZeroed(NumFrames);
 	LowRatio.SetNumZeroed(NumFrames);
+	MidRatio.SetNumZeroed(NumFrames);
 	HighRatio.SetNumZeroed(NumFrames);
 	Sibilance.SetNumZeroed(NumFrames);
 
@@ -377,69 +700,89 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		Energy[i] = Rms;
 		PeakRms = FMath::Max(PeakRms, Rms);
 
-		// Three coarse bands: voiced low, vowel-defining mid, sibilant high.
-		const float Low = BandPower(S, Count, SampleRate, 250.0f) + BandPower(S, Count, SampleRate, 500.0f);
-		const float Mid = BandPower(S, Count, SampleRate, 1500.0f) + BandPower(S, Count, SampleRate, 2500.0f);
-		const float High = BandPower(S, Count, SampleRate, 4500.0f) + BandPower(S, Count, SampleRate, 6500.0f);
-		const float Total = Low + Mid + High + 1e-9f;
+		// Four bands so A/I/U/O-style shapes pull apart more clearly.
+		const float Low = BandPower(S, Count, SampleRate, 250.0f) + BandPower(S, Count, SampleRate, 450.0f);
+		const float Mid = BandPower(S, Count, SampleRate, 900.0f) + BandPower(S, Count, SampleRate, 1400.0f);
+		const float High = BandPower(S, Count, SampleRate, 2200.0f) + BandPower(S, Count, SampleRate, 3200.0f);
+		const float Air = BandPower(S, Count, SampleRate, 5000.0f) + BandPower(S, Count, SampleRate, 7000.0f);
+		const float Total = Low + Mid + High + Air + 1e-9f;
 		LowRatio[i] = Low / Total;
-		HighRatio[i] = (Mid + High) / Total;
-		Sibilance[i] = High / (Low + 1e-9f);
+		MidRatio[i] = Mid / Total;
+		HighRatio[i] = (High + Air * 0.5f) / Total;
+		Sibilance[i] = Air / (Low + Mid + 1e-9f);
 	}
 
-	// Adaptive noise floor: median of the quietest ~20% of frames, so room tone
-	// and breathing don't keep the jaw slightly open forever.
+	// ~95th percentile normalizer so a few peaks don't squash the whole take.
 	TArray<float> SortedEnergy = Energy;
 	SortedEnergy.Sort();
 	const float NoiseFloor = SortedEnergy[FMath::Clamp(SortedEnergy.Num() / 5, 0, SortedEnergy.Num() - 1)];
-	const float SpeechGate = FMath::Max(PeakRms * 0.08f, NoiseFloor * 2.5f);
+	const float NormPeak = FMath::Max(
+		SortedEnergy[FMath::Clamp((SortedEnergy.Num() * 95) / 100, 0, SortedEnergy.Num() - 1)],
+		PeakRms * 0.55f);
+	const float SpeechGate = FMath::Max(NormPeak * 0.07f, NoiseFloor * 2.5f);
 
 	for (int32 i = 0; i < NumFrames; ++i)
 	{
-		const float E = FMath::Clamp(Energy[i] / PeakRms, 0.0f, 1.0f);
+		const float ERaw = FMath::Clamp(Energy[i] / NormPeak, 0.0f, 1.35f);
+		const float E = FMath::Clamp(FMath::Pow(ERaw, 0.55f) * 1.18f, 0.0f, 1.0f);
 		const float Gate = Energy[i] / FMath::Max(SpeechGate, 1e-6f);
 		FCineVisemeFrame& F = Frames[i];
 
-		// Below the speech gate: leave at zero (mouth fully shut after smooth).
 		if (Gate < 1.0f)
 		{
-			// Soft ramp in the near-gate band so we don't click, but hard shut below 0.5.
-			if (Gate < 0.5f)
+			if (Gate < 0.45f)
 			{
 				continue;
 			}
-			// Partial: scaled residual only — no shape variety in almost-silence.
-			F.Jaw = FMath::Pow(E, 0.8f) * Gate;
+			F.Jaw = E * Gate * 0.6f;
 			continue;
 		}
 
-		// Clear speech: open with a curve that still reaches near-zero between syllables.
-		F.Jaw = FMath::Pow(E, 0.75f);
-		F.Wide = F.Jaw * FMath::Clamp(HighRatio[i] * 1.8f - 0.35f, 0.0f, 1.0f);
-		F.Pucker = F.Jaw * FMath::Clamp(LowRatio[i] * 2.0f - 0.5f, 0.0f, 1.0f);
+		F.Jaw = E;
+		const float ShapeAmt = FMath::Clamp(E * 1.3f, 0.0f, 1.0f);
+		const float WideScore = FMath::Clamp(HighRatio[i] * 2.4f - 0.3f, 0.0f, 1.0f);
+		const float PuckerScore = FMath::Clamp(LowRatio[i] * 2.6f - 0.35f, 0.0f, 1.0f);
+		const float FunnelScore = FMath::Clamp(
+			MidRatio[i] * 2.2f + LowRatio[i] * 0.65f - HighRatio[i] * 0.75f - 0.1f, 0.0f, 1.0f);
 
-		if (Sibilance[i] > 1.2f && E > 0.08f)
+		F.Wide = ShapeAmt * WideScore;
+		F.Pucker = ShapeAmt * PuckerScore;
+		F.Funnel = ShapeAmt * FunnelScore;
+
+		// Don't leave pure jaw-only on VRM (needs I/U/O morphs to read).
+		if (E > 0.22f)
 		{
-			F.Sibilant = FMath::Clamp((Sibilance[i] - 1.2f) * 0.8f, 0.0f, 1.0f);
-			F.Jaw *= 0.35f; // S/SH is said through the teeth
+			const float MaxShape = FMath::Max3(F.Wide, F.Pucker, F.Funnel);
+			if (MaxShape < 0.24f)
+			{
+				F.Funnel = FMath::Max(F.Funnel, E * 0.5f);
+				F.Wide = FMath::Max(F.Wide, E * 0.25f);
+			}
 		}
 
-		// A sharp dip surrounded by speech reads as an M/B/P closure.
+		if (Sibilance[i] > 1.15f && E > 0.08f)
+		{
+			F.Sibilant = FMath::Clamp((Sibilance[i] - 1.15f) * 0.85f, 0.0f, 1.0f);
+			F.Jaw *= 0.38f;
+			F.Wide = FMath::Max(F.Wide, F.Sibilant * 0.5f);
+			F.Pucker *= 0.35f;
+			F.Funnel *= 0.35f;
+		}
+
 		if (i > 1 && i + 2 < NumFrames)
 		{
-			const float Around = (Energy[i - 2] + Energy[i - 1] + Energy[i + 1] + Energy[i + 2]) / (4.0f * PeakRms);
-			if (Around > 0.12f && E < Around * 0.45f)
+			const float Around = (Energy[i - 2] + Energy[i - 1] + Energy[i + 1] + Energy[i + 2]) / (4.0f * NormPeak);
+			if (Around > 0.11f && ERaw < Around * 0.42f)
 			{
 				F.Close = 1.0f;
 				F.Jaw = 0.0f;
 				F.Wide = 0.0f;
 				F.Pucker = 0.0f;
+				F.Funnel = 0.0f;
 			}
 		}
 	}
 
-	// Smooth each channel with speech-like attack/release.
-	// Jaw release is intentionally fast so the mouth actually shuts between words.
 	TArray<float> Ch;
 	Ch.SetNum(NumFrames);
 	auto SmoothChannel = [&Frames, &Ch, NumFrames](float FCineVisemeFrame::* Member, float Attack, float Release)
@@ -448,35 +791,43 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		Smooth(Ch, Attack, Release);
 		for (int32 i = 0; i < NumFrames; ++i) { Frames[i].*Member = Ch[i]; }
 	};
-	SmoothChannel(&FCineVisemeFrame::Jaw, 0.65f, 0.62f);      // open quick, close quick
-	SmoothChannel(&FCineVisemeFrame::Wide, 0.50f, 0.55f);
-	SmoothChannel(&FCineVisemeFrame::Pucker, 0.50f, 0.55f);
-	SmoothChannel(&FCineVisemeFrame::Close, 0.90f, 0.70f);    // closures snap on, hold briefly
+	SmoothChannel(&FCineVisemeFrame::Jaw, 0.7f, 0.58f);
+	SmoothChannel(&FCineVisemeFrame::Wide, 0.55f, 0.5f);
+	SmoothChannel(&FCineVisemeFrame::Pucker, 0.55f, 0.5f);
+	SmoothChannel(&FCineVisemeFrame::Funnel, 0.55f, 0.5f);
+	SmoothChannel(&FCineVisemeFrame::Close, 0.9f, 0.68f);
 	SmoothChannel(&FCineVisemeFrame::Sibilant, 0.55f, 0.45f);
 
-	// Second pass: if energy is clearly silent, force residual mouth shapes toward zero
-	// so smoothing never leaves a half-open jaw parked forever.
+	// Mild expand so mid syllables read bigger.
+	for (int32 i = 0; i < NumFrames; ++i)
+	{
+		auto Punch = [](float V) { return FMath::Clamp(FMath::Pow(V, 0.72f) * 1.12f, 0.0f, 1.0f); };
+		Frames[i].Jaw = Punch(Frames[i].Jaw);
+		Frames[i].Wide = Punch(Frames[i].Wide);
+		Frames[i].Pucker = Punch(Frames[i].Pucker);
+		Frames[i].Funnel = Punch(Frames[i].Funnel);
+	}
+
 	for (int32 i = 0; i < NumFrames; ++i)
 	{
 		const float Gate = Energy[i] / FMath::Max(SpeechGate, 1e-6f);
-		if (Gate < 0.45f)
+		if (Gate < 0.42f)
 		{
-			const float Kill = FMath::Clamp(Gate / 0.45f, 0.0f, 1.0f);
-			// Below ~0.2 gate → fully shut; between 0.2–0.45 → soft scale-down.
-			const float Scale = Gate < 0.2f ? 0.0f : Kill;
+			const float Scale = Gate < 0.18f ? 0.0f : FMath::Clamp(Gate / 0.42f, 0.0f, 1.0f);
 			Frames[i].Jaw *= Scale;
 			Frames[i].Wide *= Scale;
 			Frames[i].Pucker *= Scale;
+			Frames[i].Funnel *= Scale;
 			Frames[i].Sibilant *= Scale;
-			if (Gate < 0.2f)
+			if (Gate < 0.18f)
 			{
 				Frames[i].Close = FMath::Max(Frames[i].Close, 0.85f);
 			}
 		}
 	}
 
-	UE_LOG(LogCineDirectorLipsync, Log, TEXT("Analyzed %.1fs of audio into %d lipsync frames (gate=%.4f peak=%.4f)."),
-		(float)Mono.Num() / SampleRate, NumFrames, SpeechGate, PeakRms);
+	UE_LOG(LogCineDirectorLipsync, Log, TEXT("Analyzed %.1fs of audio into %d lipsync frames (gate=%.4f normPeak=%.4f)."),
+		(float)Mono.Num() / SampleRate, NumFrames, SpeechGate, NormPeak);
 	return Frames;
 }
 
@@ -546,46 +897,35 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 	return Frames;
 }
 
+
 FString FCineLipsync::EstimateEmotionFromAudio(const TArray<float>& Mono, int32 SampleRate)
 {
-	if (Mono.Num() < SampleRate / 4 || SampleRate <= 0)
+	// Simple, reliable detector: absolute energy/brightness/dynamics per ~2s chunk.
+	// Prefer real expressions over "calm" whenever speech energy is present.
+	if (Mono.Num() < SampleRate / 8 || SampleRate <= 0)
 	{
-		return FString();
+		return TEXT("happy");
 	}
 
-	// Analyze at ~20fps — coarse enough for emotion, cheap enough for long lines.
 	const int32 Fps = 20;
 	const int32 Hop = FMath::Max(1, SampleRate / Fps);
 	const int32 Window = Hop * 2;
 	const int32 NumFrames = FMath::Max(1, Mono.Num() / Hop);
 
-	TArray<float> Energy, Bright, Zcr;
+	TArray<float> Energy, Bright;
 	Energy.SetNumZeroed(NumFrames);
 	Bright.SetNumZeroed(NumFrames);
-	Zcr.SetNumZeroed(NumFrames);
-
 	float PeakRms = 1e-6f;
 	for (int32 i = 0; i < NumFrames; ++i)
 	{
 		const int32 Start = FMath::Clamp(i * Hop - Hop / 2, 0, Mono.Num() - 1);
 		const int32 Count = FMath::Min(Window, Mono.Num() - Start);
 		const float* S = Mono.GetData() + Start;
-
 		float SumSq = 0.0f;
-		int32 Crossings = 0;
-		for (int32 j = 0; j < Count; ++j)
-		{
-			SumSq += S[j] * S[j];
-			if (j > 0 && ((S[j - 1] >= 0.0f) != (S[j] >= 0.0f)))
-			{
-				++Crossings;
-			}
-		}
+		for (int32 j = 0; j < Count; ++j) { SumSq += S[j] * S[j]; }
 		const float Rms = FMath::Sqrt(SumSq / FMath::Max(1, Count));
 		Energy[i] = Rms;
 		PeakRms = FMath::Max(PeakRms, Rms);
-		Zcr[i] = (float)Crossings / FMath::Max(1, Count);
-
 		const float Low = BandPower(S, Count, SampleRate, 250.0f) + BandPower(S, Count, SampleRate, 500.0f);
 		const float Mid = BandPower(S, Count, SampleRate, 1500.0f) + BandPower(S, Count, SampleRate, 2500.0f);
 		const float High = BandPower(S, Count, SampleRate, 4500.0f) + BandPower(S, Count, SampleRate, 6500.0f);
@@ -595,210 +935,115 @@ FString FCineLipsync::EstimateEmotionFromAudio(const TArray<float>& Mono, int32 
 	TArray<float> Sorted = Energy;
 	Sorted.Sort();
 	const float NoiseFloor = Sorted[FMath::Clamp(Sorted.Num() / 5, 0, Sorted.Num() - 1)];
-	const float SpeechGate = FMath::Max(PeakRms * 0.08f, NoiseFloor * 2.5f);
+	const float SpeechGate = FMath::Max(PeakRms * 0.06f, NoiseFloor * 2.0f);
 
-	// Chunk into ~2.5s segments so arcs like "calm then angry" fall out naturally.
 	const float DurationSec = (float)Mono.Num() / SampleRate;
-	const float SegLenSec = 2.5f;
-	const int32 MaxSegs = 8;
-	const int32 NumSegs = FMath::Clamp(FMath::CeilToInt(DurationSec / SegLenSec), 1, MaxSegs);
+	const int32 NumSegs = FMath::Clamp(FMath::CeilToInt(DurationSec / 2.0f), 1, 8);
 	const int32 FramesPerSeg = FMath::Max(1, NumFrames / NumSegs);
 
-	struct FSegLabel
-	{
-		FString Name;      // base emotion word
-		float Intensity;   // 0..1 strength for slightly/very
-	};
-	TArray<FSegLabel> Labels;
-	Labels.Reserve(NumSegs);
-
+	TArray<FString> Labels;
 	for (int32 Seg = 0; Seg < NumSegs; ++Seg)
 	{
 		const int32 A = Seg * FramesPerSeg;
 		const int32 B = (Seg == NumSegs - 1) ? NumFrames : FMath::Min(NumFrames, (Seg + 1) * FramesPerSeg);
-		if (A >= B)
-		{
-			continue;
-		}
-
-		double SumE = 0.0, SumE2 = 0.0, SumBright = 0.0, SumZcr = 0.0;
-		int32 SpeechFrames = 0;
+		double SumE = 0.0, SumE2 = 0.0, SumBright = 0.0;
+		int32 Speech = 0;
 		int32 Attacks = 0;
-		float PrevE = 0.0f;
+		float Prev = 0.0f;
 		for (int32 i = A; i < B; ++i)
 		{
+			if (Energy[i] < SpeechGate) { Prev = Energy[i] / PeakRms; continue; }
 			const float En = Energy[i] / PeakRms;
-			if (Energy[i] < SpeechGate)
-			{
-				PrevE = En;
-				continue;
-			}
-			++SpeechFrames;
 			SumE += En;
 			SumE2 += En * En;
 			SumBright += Bright[i];
-			SumZcr += Zcr[i];
-			if (En > PrevE + 0.18f)
-			{
-				++Attacks;
-			}
-			PrevE = En;
+			if (En > Prev + 0.15f) { ++Attacks; }
+			Prev = En;
+			++Speech;
 		}
-
-		if (SpeechFrames < 3)
+		if (Speech < 2)
 		{
-			Labels.Add({ TEXT("calm"), 0.3f });
+			// Keep prior emotion across short silences instead of inserting calm.
+			if (Labels.Num() > 0) { Labels.Add(Labels.Last()); }
+			else { Labels.Add(TEXT("happy")); }
 			continue;
 		}
 
-		const float MeanE = (float)(SumE / SpeechFrames);
-		const float VarE = FMath::Max(0.0f, (float)(SumE2 / SpeechFrames) - MeanE * MeanE);
+		const float MeanE = (float)(SumE / Speech);
+		const float VarE = FMath::Max(0.0f, (float)(SumE2 / Speech) - MeanE * MeanE);
 		const float Dyn = FMath::Sqrt(VarE);
-		const float MeanBright = (float)(SumBright / SpeechFrames);
-		const float MeanZcr = (float)(SumZcr / SpeechFrames);
-		const float PauseRatio = 1.0f - (float)SpeechFrames / (float)(B - A);
-		const float AttackRate = (float)Attacks / FMath::Max(1.0f, (B - A) / (float)Fps); // per second
+		const float MeanBright = (float)(SumBright / Speech);
+		const float PauseRatio = 1.0f - (float)Speech / (float)FMath::Max(1, B - A);
+		const float AttackRate = (float)Attacks / FMath::Max(0.5f, (B - A) / (float)Fps);
+		const float Arousal = MeanE * 0.55f + Dyn * 1.3f + AttackRate * 0.12f;
 
-		// Arousal: loud + dynamic + punchy attacks.
-		const float Arousal = FMath::Clamp(MeanE * 0.55f + Dyn * 1.4f + AttackRate * 0.15f, 0.0f, 1.5f);
-		// Brightness / tension: brighter + higher ZCR → fear/surprise vs warm/happy.
-		const float Tension = FMath::Clamp(MeanBright * 0.7f + MeanZcr * 8.0f, 0.0f, 1.5f);
-		// Soft/slow: high pause + low energy → sadness.
-		const float Softness = FMath::Clamp(PauseRatio * 0.9f + (1.0f - MeanE) * 0.5f, 0.0f, 1.5f);
-
-		FString Name = TEXT("calm");
-		float Intensity = 0.45f;
-
-		if (Arousal > 0.55f && Tension > 0.75f && AttackRate > 1.2f)
+		FString Name = TEXT("happy");
+		if (Arousal > 0.55f && MeanBright < 0.48f && Dyn > 0.10f)
 		{
-			// Sudden loud bright bursts
-			Name = TEXT("surprised");
-			Intensity = FMath::Clamp(Arousal, 0.55f, 1.0f);
-		}
-		else if (Arousal > 0.62f && MeanBright < 0.55f && Dyn > 0.12f)
-		{
-			// Loud, darker, jagged — anger
 			Name = TEXT("angry");
-			Intensity = FMath::Clamp(Arousal * 0.9f + Dyn, 0.55f, 1.0f);
 		}
-		else if (Arousal > 0.55f && Tension > 0.85f && PauseRatio < 0.35f)
+		else if (Arousal > 0.5f && MeanBright > 0.58f && AttackRate > 0.8f)
 		{
-			// High, tense, continuous — fear
+			Name = TEXT("surprised");
+		}
+		else if (Arousal > 0.48f && MeanBright > 0.55f && PauseRatio < 0.4f)
+		{
 			Name = TEXT("scared");
-			Intensity = FMath::Clamp(Tension * 0.7f + Arousal * 0.4f, 0.5f, 1.0f);
 		}
-		else if (Softness > 0.7f && Arousal < 0.4f)
-		{
-			// Quiet, sparse — sadness
-			Name = TEXT("sad");
-			Intensity = FMath::Clamp(Softness * 0.8f, 0.45f, 1.0f);
-		}
-		else if (Arousal > 0.4f && MeanBright > 0.52f && Dyn < 0.22f && PauseRatio < 0.45f)
-		{
-			// Moderate energy, bright, steady — happiness (capped; Joy morphs go wide fast)
-			Name = TEXT("happy");
-			Intensity = FMath::Clamp(0.35f + MeanE * 0.35f + MeanBright * 0.15f, 0.4f, 0.55f);
-		}
-		else if (Arousal > 0.5f && Dyn > 0.18f && MeanBright > 0.48f)
-		{
-			// Energetic but not clearly angry — mild happy, not a super-grin
-			Name = TEXT("happy");
-			Intensity = FMath::Clamp(Arousal * 0.45f, 0.4f, 0.55f);
-		}
-		else if (Arousal < 0.28f)
-		{
-			Name = TEXT("calm");
-			Intensity = 0.35f;
-		}
-		else if (MeanBright < 0.42f && Softness > 0.45f)
+		else if (PauseRatio > 0.55f && MeanE < 0.35f)
 		{
 			Name = TEXT("sad");
-			Intensity = FMath::Clamp(0.4f + Softness * 0.4f, 0.4f, 0.85f);
 		}
-		else if (Arousal > 0.48f && MeanBright < 0.48f)
+		else if (Arousal > 0.35f && MeanBright > 0.48f)
 		{
-			// Mild dark energy — suspicious / low-key anger
+			Name = TEXT("happy");
+		}
+		else if (Arousal > 0.42f && MeanBright < 0.45f)
+		{
 			Name = TEXT("suspicious");
-			Intensity = FMath::Clamp(Arousal * 0.7f, 0.4f, 0.8f);
+		}
+		else if (MeanE < 0.22f && PauseRatio > 0.45f)
+		{
+			Name = TEXT("sad");
 		}
 		else
 		{
-			// Default speaking: light engagement rather than a blank face.
-			if (MeanE > 0.25f && MeanBright > 0.45f)
-			{
-				Name = TEXT("happy");
-				Intensity = 0.48f; // formats as "slightly happy"
-			}
-			else
-			{
-				Name = TEXT("calm");
-				Intensity = 0.4f;
-			}
+			// Default speaking engagement — never blank.
+			Name = TEXT("happy");
 		}
 
-		Labels.Add({ Name, Intensity });
-	}
-
-	if (Labels.Num() == 0)
-	{
-		return FString();
-	}
-
-	// Collapse consecutive identical base emotions; keep max intensity.
-	TArray<FSegLabel> Collapsed;
-	for (const FSegLabel& L : Labels)
-	{
-		// Strip any prefix we might have baked into Name for the special case
-		FString Base = L.Name;
-		Base.ReplaceInline(TEXT("slightly "), TEXT(""));
-		Base.ReplaceInline(TEXT("very "), TEXT(""));
-
-		if (Collapsed.Num() > 0)
+		// Avoid immediate identical spam: if same as last, try a mild alternate.
+		if (Labels.Num() > 0 && Labels.Last().Equals(Name, ESearchCase::IgnoreCase) && NumSegs >= 3)
 		{
-			FString PrevBase = Collapsed.Last().Name;
-			PrevBase.ReplaceInline(TEXT("slightly "), TEXT(""));
-			PrevBase.ReplaceInline(TEXT("very "), TEXT(""));
-			if (PrevBase.Equals(Base, ESearchCase::IgnoreCase))
-			{
-				Collapsed.Last().Intensity = FMath::Max(Collapsed.Last().Intensity, L.Intensity);
-				continue;
-			}
+			if (Name.Equals(TEXT("happy")) && MeanBright < 0.5f) { Name = TEXT("angry"); }
+			else if (Name.Equals(TEXT("angry")) && MeanE < 0.4f) { Name = TEXT("sad"); }
+			else if (Name.Equals(TEXT("sad")) && MeanE > 0.4f) { Name = TEXT("happy"); }
 		}
-		Collapsed.Add({ Base, L.Intensity });
+		Labels.Add(Name);
 	}
 
-	// Format with slightly/very from intensity.
-	TArray<FString> Parts;
-	for (const FSegLabel& L : Collapsed)
+	// Collapse consecutive duplicates.
+	TArray<FString> Collapsed;
+	for (const FString& L : Labels)
 	{
-		if (L.Name.Equals(TEXT("calm"), ESearchCase::IgnoreCase) && Collapsed.Num() > 1 && L.Intensity < 0.5f)
+		if (Collapsed.Num() > 0 && Collapsed.Last().Equals(L, ESearchCase::IgnoreCase))
 		{
-			// Skip weak calm segments sandwiched in an arc — keeps "angry then sad" clean.
 			continue;
 		}
-		FString Part;
-		if (L.Intensity >= 0.85f && !L.Name.Equals(TEXT("calm"), ESearchCase::IgnoreCase))
-		{
-			Part = FString::Printf(TEXT("very %s"), *L.Name);
-		}
-		else if (L.Intensity <= 0.5f && !L.Name.Equals(TEXT("calm"), ESearchCase::IgnoreCase))
-		{
-			Part = FString::Printf(TEXT("slightly %s"), *L.Name);
-		}
-		else
-		{
-			Part = L.Name;
-		}
-		Parts.Add(Part);
+		Collapsed.Add(L);
 	}
-
-	if (Parts.Num() == 0)
+	if (Collapsed.Num() == 0)
 	{
-		return TEXT("calm");
+		return TEXT("happy");
+	}
+	// Cap arc length.
+	while (Collapsed.Num() > 5)
+	{
+		Collapsed.RemoveAt(Collapsed.Num() / 2);
 	}
 
-	const FString Result = FString::Join(Parts, TEXT(" then "));
-	UE_LOG(LogCineDirectorLipsync, Log, TEXT("Audio emotion estimate: %s (%.1fs, %d segments → %d labels)"),
-		*Result, DurationSec, NumSegs, Parts.Num());
+	const FString Result = FString::Join(Collapsed, TEXT(" then "));
+	UE_LOG(LogCineDirectorLipsync, Log, TEXT("Audio emotion estimate: %s (%.1fs, %d segs)"),
+		*Result, DurationSec, NumSegs);
 	return Result;
 }

@@ -51,50 +51,53 @@ namespace
 	 */
 	const FEmotionDef GEmotions[] = {
 		{ TEXT("scared,afraid,terrified,fear,frightened"),
-			{ { ECineFaceSlot::ExprSurprised, 0.55f },
-			  { ECineFaceSlot::BrowSad, 0.85f }, { ECineFaceSlot::BrowUp, 0.7f }, { ECineFaceSlot::EyeWide, 1.0f },
-			  { ECineFaceSlot::MouthFrown, 0.45f }, { ECineFaceSlot::MouthPress, 0.35f } } },
+			{ { ECineFaceSlot::ExprSurprised, 0.9f },
+			  { ECineFaceSlot::BrowSad, 1.0f }, { ECineFaceSlot::BrowUp, 0.95f }, { ECineFaceSlot::EyeWide, 1.0f },
+			  { ECineFaceSlot::MouthFrown, 0.55f }, { ECineFaceSlot::MouthPress, 0.45f } } },
 		{ TEXT("angry,furious,mad,rage,pissed"),
 			{ { ECineFaceSlot::ExprAngry, 1.0f },
-			  { ECineFaceSlot::BrowDown, 1.0f }, { ECineFaceSlot::EyeSquint, 0.65f }, { ECineFaceSlot::NoseSneer, 0.75f },
-			  { ECineFaceSlot::MouthPress, 0.65f }, { ECineFaceSlot::MouthFrown, 0.55f } } },
+			  { ECineFaceSlot::BrowDown, 1.0f }, { ECineFaceSlot::EyeSquint, 0.8f }, { ECineFaceSlot::NoseSneer, 0.9f },
+			  { ECineFaceSlot::MouthPress, 0.8f }, { ECineFaceSlot::MouthFrown, 0.7f } } },
 		{ TEXT("happy,joyful,cheerful,smiling,glad"),
-			// Kept intentionally mild — VRM Joy morphs are full-face and read as a
-			// super-wide grin at high weights. "very happy" still only reaches ~0.55.
-			{ { ECineFaceSlot::ExprHappy, 0.45f },
-			  { ECineFaceSlot::MouthSmile, 0.4f }, { ECineFaceSlot::EyeSquint, 0.18f }, { ECineFaceSlot::BrowUp, 0.12f } } },
+			// Strong default; panel Emotion Strength slider can dial down if too wide.
+			{ { ECineFaceSlot::ExprHappy, 0.85f },
+			  { ECineFaceSlot::MouthSmile, 0.8f }, { ECineFaceSlot::EyeSquint, 0.35f }, { ECineFaceSlot::BrowUp, 0.28f } } },
 		{ TEXT("sad,somber,mournful,depressed,grief"),
 			{ { ECineFaceSlot::ExprSad, 1.0f },
-			  { ECineFaceSlot::BrowSad, 0.95f }, { ECineFaceSlot::MouthFrown, 0.85f }, { ECineFaceSlot::EyeBlink, 0.15f } } },
+			  { ECineFaceSlot::BrowSad, 1.0f }, { ECineFaceSlot::MouthFrown, 0.95f }, { ECineFaceSlot::EyeBlink, 0.15f } } },
 		{ TEXT("surprised,shocked,amazed,startled"),
 			{ { ECineFaceSlot::ExprSurprised, 1.0f },
-			  { ECineFaceSlot::BrowUp, 1.0f }, { ECineFaceSlot::EyeWide, 1.0f }, { ECineFaceSlot::JawOpen, 0.4f } } },
+			  { ECineFaceSlot::BrowUp, 1.0f }, { ECineFaceSlot::EyeWide, 1.0f }, { ECineFaceSlot::JawOpen, 0.45f } } },
 		{ TEXT("disgusted,disgust,revolted,grossed"),
-			{ { ECineFaceSlot::ExprAngry, 0.45f },
-			  { ECineFaceSlot::NoseSneer, 1.0f }, { ECineFaceSlot::BrowDown, 0.65f }, { ECineFaceSlot::MouthFrown, 0.65f },
-			  { ECineFaceSlot::EyeSquint, 0.55f } } },
+			{ { ECineFaceSlot::ExprAngry, 0.7f },
+			  { ECineFaceSlot::NoseSneer, 1.0f }, { ECineFaceSlot::BrowDown, 0.85f }, { ECineFaceSlot::MouthFrown, 0.8f },
+			  { ECineFaceSlot::EyeSquint, 0.7f } } },
 		{ TEXT("pain,hurt,agony,wincing"),
-			{ { ECineFaceSlot::ExprSad, 0.5f },
-			  { ECineFaceSlot::EyeSquint, 1.0f }, { ECineFaceSlot::BrowSad, 0.75f }, { ECineFaceSlot::NoseSneer, 0.6f },
-			  { ECineFaceSlot::MouthWide, 0.5f } } },
+			{ { ECineFaceSlot::ExprSad, 0.8f },
+			  { ECineFaceSlot::EyeSquint, 1.0f }, { ECineFaceSlot::BrowSad, 0.95f }, { ECineFaceSlot::NoseSneer, 0.75f },
+			  { ECineFaceSlot::MouthWide, 0.55f } } },
 		{ TEXT("suspicious,wary,distrustful,skeptical"),
-			{ { ECineFaceSlot::BrowDown, 0.55f }, { ECineFaceSlot::EyeSquint, 0.75f }, { ECineFaceSlot::MouthPress, 0.45f } } },
-		{ TEXT("calm,neutral,relaxed,blank"), {} },
+			{ { ECineFaceSlot::ExprAngry, 0.55f },
+			  { ECineFaceSlot::BrowDown, 0.85f }, { ECineFaceSlot::EyeSquint, 0.9f }, { ECineFaceSlot::MouthPress, 0.6f } } },
+		{ TEXT("calm,neutral,relaxed,blank"),
+			{ { ECineFaceSlot::BrowUp, 0.12f }, { ECineFaceSlot::MouthSmile, 0.1f } } },
 	};
 
 	/** Per-slot values one emotion segment settles at, or empty for neutral. */
-	void ParseEmotionSegment(const FString& Segment, float* OutValues /* [Count] */)
+	void ParseEmotionSegment(const FString& Segment, float* OutValues /* [Count] */, float StrengthMul = 1.0f)
 	{
-		const FString Lower = Segment.ToLower();
+		const FString Lower = Segment.ToLower().TrimStartAndEnd();
 		float Intensity = 1.0f;
 		if (Lower.Contains(TEXT("slightly")) || Lower.Contains(TEXT("subtle")) || Lower.Contains(TEXT("a bit")))
 		{
-			Intensity = 0.55f;
+			Intensity = 0.75f;
 		}
 		else if (Lower.Contains(TEXT("very")) || Lower.Contains(TEXT("extremely")) || Lower.Contains(TEXT("super")))
 		{
-			Intensity = 1.0f; // already maxed; clamp keeps us at 1
+			Intensity = 1.15f;
 		}
+		// Panel Emotion Strength (1.0 = table values, 2.0 = maxed, 0 = off).
+		Intensity *= FMath::Clamp(StrengthMul, 0.0f, 2.5f);
 
 		int32 Matched = 0;
 		for (const FEmotionDef& Def : GEmotions)
@@ -102,8 +105,10 @@ namespace
 			TArray<FString> Keywords;
 			FString(Def.Keywords).ParseIntoArray(Keywords, TEXT(","));
 			bool bHit = false;
-			for (const FString& Keyword : Keywords)
+			for (FString Keyword : Keywords)
 			{
+				Keyword.TrimStartAndEndInline();
+				if (Keyword.IsEmpty()) continue;
 				bHit |= Lower.Contains(Keyword);
 			}
 			if (!bHit)
@@ -117,9 +122,14 @@ namespace
 					FMath::Clamp(SV.Value * Intensity, 0.0f, 1.0f));
 			}
 		}
-		if (Matched == 0 && !Segment.TrimStartAndEnd().IsEmpty())
+		if (Matched == 0 && !Lower.IsEmpty())
 		{
 			UE_LOG(LogCineDirectorFaceBake, Warning, TEXT("No emotion recognized in \"%s\" — treating as neutral."), *Segment);
+		}
+		else
+		{
+			UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Emotion segment \"%s\" matched %d def(s) strength=%.2f"),
+				*Segment, Matched, Intensity);
 		}
 	}
 
@@ -241,11 +251,12 @@ namespace
 				continue;
 			}
 
-			// Zero losers; keep winner at full measured strength.
-			Timeline[Jaw][f]    = (Winner == 0) ? Best : 0.0f;
-			Timeline[Wide][f]   = (Winner == 1) ? Best : 0.0f;
-			Timeline[Pucker][f] = (Winner == 2) ? Best : 0.0f;
-			Timeline[Funnel][f] = (Winner == 3) ? Best : 0.0f;
+			// Punch winner so A/I/U/O travel further on VRM faces.
+			const float Punch = FMath::Clamp(FMath::Pow(Best, 0.68f) * 1.22f, 0.0f, 1.0f);
+			Timeline[Jaw][f]    = (Winner == 0) ? Punch : 0.0f;
+			Timeline[Wide][f]   = (Winner == 1) ? Punch : 0.0f;
+			Timeline[Pucker][f] = (Winner == 2) ? Punch : 0.0f;
+			Timeline[Funnel][f] = (Winner == 3) ? Punch : 0.0f;
 		}
 	}
 }
@@ -283,11 +294,18 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	}
 
 	TArray<FString> Segments;
-	Request.EmotionText.Replace(TEXT(" Then "), TEXT(" then ")).ParseIntoArray(Segments, TEXT(" then "));
-	if (Segments.Num() == 0)
 	{
-		Segments.Add(Request.EmotionText);
+		FString EmotionWork = Request.EmotionText;
+		EmotionWork.ReplaceInline(TEXT(" Then "), TEXT(" then "));
+		EmotionWork.ReplaceInline(TEXT(" THEN "), TEXT(" then "));
+		EmotionWork.TrimStartAndEndInline();
+		EmotionWork.ParseIntoArray(Segments, TEXT(" then "), true);
+		if (Segments.Num() == 0 && !EmotionWork.IsEmpty())
+		{
+			Segments.Add(EmotionWork);
+		}
 	}
+	const float EmotionStr = FMath::Clamp(Request.EmotionStrength, 0.0f, 2.5f);
 	const int32 RampFrames = FMath::Max(1, FMath::RoundToInt32(0.35f * Fps));
 	TArray<float> PrevPose, NextPose;
 	PrevPose.SetNumZeroed(SlotCount);
@@ -295,7 +313,7 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	{
 		NextPose.Reset();
 		NextPose.SetNumZeroed(SlotCount);
-		ParseEmotionSegment(Segments[SegIndex], NextPose.GetData());
+		ParseEmotionSegment(Segments[SegIndex], NextPose.GetData(), EmotionStr);
 
 		const int32 SegStart = NumFrames * SegIndex / Segments.Num();
 		const int32 SegEnd = NumFrames * (SegIndex + 1) / Segments.Num();
@@ -310,8 +328,35 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		PrevPose = NextPose;
 	}
 
-	// Lipsync on top of the emotion base. Closures kill jaw; on meshes without
-	// a MouthClose morph the zeroed jaw alone fully shuts the mouth.
+	// Peak of expression slots for diagnostics.
+	float PeakExpr = 0.0f;
+	const ECineFaceSlot PeakSlots[] = {
+		ECineFaceSlot::ExprHappy, ECineFaceSlot::ExprAngry, ECineFaceSlot::ExprSad, ECineFaceSlot::ExprSurprised,
+		ECineFaceSlot::BrowDown, ECineFaceSlot::BrowSad, ECineFaceSlot::MouthSmile
+	};
+	for (ECineFaceSlot S : PeakSlots)
+	{
+		for (float V : Timeline[(int32)S]) { PeakExpr = FMath::Max(PeakExpr, V); }
+	}
+	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("EmotionText=\"%s\" strength=%.2f peakExpr=%.2f segs=%d"),
+		*Request.EmotionText, EmotionStr, PeakExpr, Segments.Num());
+
+	// Snapshot expression slots so exclusive mouth processing can't wipe them.
+	const ECineFaceSlot ExpressionSlots[] = {
+		ECineFaceSlot::MouthSmile, ECineFaceSlot::MouthFrown, ECineFaceSlot::MouthPress,
+		ECineFaceSlot::NoseSneer, ECineFaceSlot::BrowUp, ECineFaceSlot::BrowDown, ECineFaceSlot::BrowSad,
+		ECineFaceSlot::EyeWide, ECineFaceSlot::EyeSquint,
+		ECineFaceSlot::ExprHappy, ECineFaceSlot::ExprAngry, ECineFaceSlot::ExprSad, ECineFaceSlot::ExprSurprised,
+	};
+	TArray<TArray<float>> ExpressionHold;
+	ExpressionHold.SetNum(UE_ARRAY_COUNT(ExpressionSlots));
+	for (int32 i = 0; i < UE_ARRAY_COUNT(ExpressionSlots); ++i)
+	{
+		ExpressionHold[i] = Timeline[(int32)ExpressionSlots[i]];
+	}
+
+	// Lipsync on top of the emotion base (unit gain). Mouth Strength is applied
+	// after exclusive visemes so the slider always has a clear, final effect.
 	for (int32 Frame = 0; Frame < Request.Visemes.Num() && Frame < NumFrames; ++Frame)
 	{
 		const FCineVisemeFrame& V = Request.Visemes[Frame];
@@ -322,24 +367,55 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 			FMath::Max(Timeline[(int32)ECineFaceSlot::MouthClose][Frame], V.Close);
 		Timeline[(int32)ECineFaceSlot::MouthPress][Frame] =
 			FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPress][Frame], V.Close * 0.7f);
-		// Shape channels: replace (not pile onto) emotion mouth shapes during speech
-		// so smile + wide jaw don't leave the mouth stuck half-open.
-		if (Open > 0.05f || V.Close > 0.3f)
+		if (Open > 0.04f || V.Close > 0.3f || V.Wide > 0.05f || V.Pucker > 0.05f || V.Funnel > 0.05f)
 		{
-			const float ShapeWide = (V.Wide + V.Sibilant * 0.4f) * (1.0f - V.Close);
-			const float ShapePucker = V.Pucker * (1.0f - V.Close);
+			const float ShapeWide = FMath::Clamp((V.Wide + V.Sibilant * 0.4f) * (1.0f - V.Close), 0.0f, 1.0f);
+			const float ShapePucker = FMath::Clamp(V.Pucker * (1.0f - V.Close), 0.0f, 1.0f);
+			const float ShapeFunnel = FMath::Clamp(
+				FMath::Max(V.Funnel, V.Pucker * 0.35f) * (1.0f - V.Close), 0.0f, 1.0f);
 			Timeline[(int32)ECineFaceSlot::MouthWide][Frame] =
-				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthWide][Frame] * 0.35f, ShapeWide);
+				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthWide][Frame] * 0.4f, ShapeWide);
 			Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] =
 				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] * 0.35f, ShapePucker);
 			Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] =
-				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] * 0.35f, ShapePucker * 0.5f);
+				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] * 0.35f, ShapeFunnel);
 		}
 	}
 
 	if (Request.Profile.bExclusiveVisemes)
 	{
 		ApplyExclusiveVisemes(Timeline, NumFrames);
+	}
+
+	// Final mouth strength scale (panel slider). 0 = no mouth motion, 1 = as analyzed, 2 = double.
+	{
+		const float MouthMul = FMath::Clamp(Request.MouthStrength, 0.0f, 2.5f);
+		const ECineFaceSlot MouthSlots[] = {
+			ECineFaceSlot::JawOpen, ECineFaceSlot::MouthWide,
+			ECineFaceSlot::MouthPucker, ECineFaceSlot::MouthFunnel,
+			// Close/press stay unscaled so consonants still shut cleanly at low strength.
+		};
+		if (!FMath::IsNearlyEqual(MouthMul, 1.0f))
+		{
+			for (ECineFaceSlot Slot : MouthSlots)
+			{
+				TArray<float>& Track = Timeline[(int32)Slot];
+				for (float& V : Track)
+				{
+					V = FMath::Clamp(V * MouthMul, 0.0f, 1.0f);
+				}
+			}
+		}
+	}
+
+	// Restore brows / full-face expressions after exclusive mouth pass.
+	for (int32 i = 0; i < UE_ARRAY_COUNT(ExpressionSlots); ++i)
+	{
+		const int32 Slot = (int32)ExpressionSlots[i];
+		for (int32 f = 0; f < NumFrames; ++f)
+		{
+			Timeline[Slot][f] = FMath::Max(Timeline[Slot][f], ExpressionHold[i][f]);
+		}
 	}
 
 	// Hard shut floor: any frame where jaw + shapes are all tiny → force zero.
