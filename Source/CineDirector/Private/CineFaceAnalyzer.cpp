@@ -12,22 +12,30 @@ const TCHAR* CineFaceSlotName(ECineFaceSlot Slot)
 {
 	switch (Slot)
 	{
-	case ECineFaceSlot::JawOpen:     return TEXT("JawOpen");
-	case ECineFaceSlot::MouthClose:  return TEXT("MouthClose");
-	case ECineFaceSlot::MouthWide:   return TEXT("MouthWide");
-	case ECineFaceSlot::MouthPucker: return TEXT("MouthPucker");
-	case ECineFaceSlot::MouthFunnel: return TEXT("MouthFunnel");
-	case ECineFaceSlot::MouthSmile:  return TEXT("MouthSmile");
-	case ECineFaceSlot::MouthFrown:  return TEXT("MouthFrown");
-	case ECineFaceSlot::MouthPress:  return TEXT("MouthPress");
-	case ECineFaceSlot::NoseSneer:   return TEXT("NoseSneer");
-	case ECineFaceSlot::BrowUp:      return TEXT("BrowUp");
-	case ECineFaceSlot::BrowDown:    return TEXT("BrowDown");
-	case ECineFaceSlot::BrowSad:     return TEXT("BrowSad");
-	case ECineFaceSlot::EyeBlink:    return TEXT("EyeBlink");
-	case ECineFaceSlot::EyeWide:     return TEXT("EyeWide");
-	case ECineFaceSlot::EyeSquint:   return TEXT("EyeSquint");
-	default:                         return TEXT("Unknown");
+	case ECineFaceSlot::JawOpen:        return TEXT("JawOpen");
+	case ECineFaceSlot::MouthClose:     return TEXT("MouthClose");
+	case ECineFaceSlot::MouthWide:      return TEXT("MouthWide");
+	case ECineFaceSlot::MouthPucker:    return TEXT("MouthPucker");
+	case ECineFaceSlot::MouthFunnel:    return TEXT("MouthFunnel");
+	case ECineFaceSlot::MouthSmile:     return TEXT("MouthSmile");
+	case ECineFaceSlot::MouthFrown:     return TEXT("MouthFrown");
+	case ECineFaceSlot::MouthPress:     return TEXT("MouthPress");
+	case ECineFaceSlot::NoseSneer:      return TEXT("NoseSneer");
+	case ECineFaceSlot::BrowUp:         return TEXT("BrowUp");
+	case ECineFaceSlot::BrowDown:       return TEXT("BrowDown");
+	case ECineFaceSlot::BrowSad:        return TEXT("BrowSad");
+	case ECineFaceSlot::EyeBlink:       return TEXT("EyeBlink");
+	case ECineFaceSlot::EyeWide:        return TEXT("EyeWide");
+	case ECineFaceSlot::EyeSquint:      return TEXT("EyeSquint");
+	case ECineFaceSlot::EyeLookLeft:    return TEXT("EyeLookLeft");
+	case ECineFaceSlot::EyeLookRight:   return TEXT("EyeLookRight");
+	case ECineFaceSlot::EyeLookUp:      return TEXT("EyeLookUp");
+	case ECineFaceSlot::EyeLookDown:    return TEXT("EyeLookDown");
+	case ECineFaceSlot::ExprHappy:      return TEXT("ExprHappy");
+	case ECineFaceSlot::ExprAngry:      return TEXT("ExprAngry");
+	case ECineFaceSlot::ExprSad:        return TEXT("ExprSad");
+	case ECineFaceSlot::ExprSurprised:  return TEXT("ExprSurprised");
+	default:                            return TEXT("Unknown");
 	}
 }
 
@@ -56,8 +64,8 @@ namespace
 	};
 
 	/**
-	 * Exact (normalized) matches first: ARKit's 52, Oculus visemes, and the
-	 * Reallusion/CC viseme set — the names audio-to-face pipelines emit.
+	 * Exact (normalized) matches first: ARKit's 52, Oculus visemes, VRM/MMD,
+	 * and the Reallusion/CC viseme set — the names audio-to-face pipelines emit.
 	 */
 	const TMap<FString, TPair<ECineFaceSlot, float>>& ExactTable()
 	{
@@ -94,6 +102,15 @@ namespace
 			Add(TEXT("eyeWideRight"), ECineFaceSlot::EyeWide);
 			Add(TEXT("eyeSquintLeft"), ECineFaceSlot::EyeSquint);
 			Add(TEXT("eyeSquintRight"), ECineFaceSlot::EyeSquint);
+			// ARKit gaze
+			Add(TEXT("eyeLookInLeft"), ECineFaceSlot::EyeLookRight);   // left eye in = look right
+			Add(TEXT("eyeLookInRight"), ECineFaceSlot::EyeLookLeft);
+			Add(TEXT("eyeLookOutLeft"), ECineFaceSlot::EyeLookLeft);
+			Add(TEXT("eyeLookOutRight"), ECineFaceSlot::EyeLookRight);
+			Add(TEXT("eyeLookUpLeft"), ECineFaceSlot::EyeLookUp);
+			Add(TEXT("eyeLookUpRight"), ECineFaceSlot::EyeLookUp);
+			Add(TEXT("eyeLookDownLeft"), ECineFaceSlot::EyeLookDown);
+			Add(TEXT("eyeLookDownRight"), ECineFaceSlot::EyeLookDown);
 			// Oculus visemes
 			Add(TEXT("viseme_aa"), ECineFaceSlot::JawOpen);
 			Add(TEXT("viseme_E"), ECineFaceSlot::MouthWide);
@@ -103,17 +120,41 @@ namespace
 			Add(TEXT("viseme_PP"), ECineFaceSlot::MouthClose);
 			Add(TEXT("viseme_SS"), ECineFaceSlot::MouthWide, 0.5f);
 			Add(TEXT("viseme_FF"), ECineFaceSlot::MouthPress, 0.6f);
-			// VRM / MMD-style sets: A-I-U-E-O vowel visemes + full-face emotions
+			// VRM / MMD-style: A-I-U-E-O vowel visemes (exclusive), full-face emotions, gaze
 			Add(TEXT("A"), ECineFaceSlot::JawOpen);
 			Add(TEXT("I"), ECineFaceSlot::MouthWide);
 			Add(TEXT("U"), ECineFaceSlot::MouthPucker);
 			Add(TEXT("E"), ECineFaceSlot::MouthWide, 0.6f);
 			Add(TEXT("O"), ECineFaceSlot::MouthFunnel);
-			Add(TEXT("Joy"), ECineFaceSlot::MouthSmile);
-			Add(TEXT("Fun"), ECineFaceSlot::MouthSmile, 0.6f);
-			Add(TEXT("Angry"), ECineFaceSlot::BrowDown);
-			Add(TEXT("Sorrow"), ECineFaceSlot::BrowSad);
-			Add(TEXT("Surprised"), ECineFaceSlot::EyeWide);
+			// Full-face expression morphs — driven whole by the baker's Expr* slots
+			Add(TEXT("Joy"), ECineFaceSlot::ExprHappy);
+			Add(TEXT("Fun"), ECineFaceSlot::ExprHappy, 0.85f);
+			Add(TEXT("Happy"), ECineFaceSlot::ExprHappy);
+			Add(TEXT("Angry"), ECineFaceSlot::ExprAngry);
+			Add(TEXT("Anger"), ECineFaceSlot::ExprAngry);
+			Add(TEXT("Sorrow"), ECineFaceSlot::ExprSad);
+			Add(TEXT("Sad"), ECineFaceSlot::ExprSad);
+			Add(TEXT("Surprised"), ECineFaceSlot::ExprSurprised);
+			Add(TEXT("Surprise"), ECineFaceSlot::ExprSurprised);
+			// Also bind micro-slots so partial emotion components still land when present
+			Add(TEXT("Smile"), ECineFaceSlot::MouthSmile);
+			// VRM blink variants
+			Add(TEXT("Blink"), ECineFaceSlot::EyeBlink);
+			Add(TEXT("Blink_L"), ECineFaceSlot::EyeBlink);
+			Add(TEXT("Blink_R"), ECineFaceSlot::EyeBlink);
+			Add(TEXT("BlinkLeft"), ECineFaceSlot::EyeBlink);
+			Add(TEXT("BlinkRight"), ECineFaceSlot::EyeBlink);
+			Add(TEXT("Eye_Close"), ECineFaceSlot::EyeBlink);
+			Add(TEXT("EyeClose"), ECineFaceSlot::EyeBlink);
+			// VRM gaze
+			Add(TEXT("LookLeft"), ECineFaceSlot::EyeLookLeft);
+			Add(TEXT("LookRight"), ECineFaceSlot::EyeLookRight);
+			Add(TEXT("LookUp"), ECineFaceSlot::EyeLookUp);
+			Add(TEXT("LookDown"), ECineFaceSlot::EyeLookDown);
+			Add(TEXT("Look_Left"), ECineFaceSlot::EyeLookLeft);
+			Add(TEXT("Look_Right"), ECineFaceSlot::EyeLookRight);
+			Add(TEXT("Look_Up"), ECineFaceSlot::EyeLookUp);
+			Add(TEXT("Look_Down"), ECineFaceSlot::EyeLookDown);
 			// Reallusion / Character Creator
 			Add(TEXT("V_Open"), ECineFaceSlot::JawOpen);
 			Add(TEXT("V_Wide"), ECineFaceSlot::MouthWide);
@@ -129,21 +170,37 @@ namespace
 	const FNamePattern* FuzzyTable(int32& OutNum)
 	{
 		static const FNamePattern Patterns[] = {
+			// Gaze before generic "eye" patterns so LookLeft doesn't become blink
+			{ TEXT("lookleft"), ECineFaceSlot::EyeLookLeft, 1.0f },
+			{ TEXT("lookright"), ECineFaceSlot::EyeLookRight, 1.0f },
+			{ TEXT("lookup"), ECineFaceSlot::EyeLookUp, 1.0f },
+			{ TEXT("lookdown"), ECineFaceSlot::EyeLookDown, 1.0f },
+			{ TEXT("eyelookleft"), ECineFaceSlot::EyeLookLeft, 1.0f },
+			{ TEXT("eyelookright"), ECineFaceSlot::EyeLookRight, 1.0f },
+			{ TEXT("eyelookup"), ECineFaceSlot::EyeLookUp, 1.0f },
+			{ TEXT("eyelookdown"), ECineFaceSlot::EyeLookDown, 1.0f },
+			{ TEXT("gazeleft"), ECineFaceSlot::EyeLookLeft, 1.0f },
+			{ TEXT("gazeright"), ECineFaceSlot::EyeLookRight, 1.0f },
 			{ TEXT("jawopen"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("mouthopen"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("jawdrop"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("openmouth"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("mouthah"), ECineFaceSlot::JawOpen, 1.0f },
-			{ TEXT("aa"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("blink"), ECineFaceSlot::EyeBlink, 1.0f },
 			{ TEXT("eyesclosed"), ECineFaceSlot::EyeBlink, 1.0f },
 			{ TEXT("eyeclose"), ECineFaceSlot::EyeBlink, 1.0f },
 			{ TEXT("eyewide"), ECineFaceSlot::EyeWide, 1.0f },
 			{ TEXT("squint"), ECineFaceSlot::EyeSquint, 1.0f },
 			{ TEXT("smile"), ECineFaceSlot::MouthSmile, 1.0f },
-			{ TEXT("happy"), ECineFaceSlot::MouthSmile, 0.8f },
+			{ TEXT("happy"), ECineFaceSlot::ExprHappy, 0.9f },
+			{ TEXT("joy"), ECineFaceSlot::ExprHappy, 1.0f },
+			{ TEXT("angry"), ECineFaceSlot::ExprAngry, 1.0f },
+			{ TEXT("anger"), ECineFaceSlot::ExprAngry, 1.0f },
+			{ TEXT("sorrow"), ECineFaceSlot::ExprSad, 1.0f },
 			{ TEXT("frown"), ECineFaceSlot::MouthFrown, 1.0f },
 			{ TEXT("sadmouth"), ECineFaceSlot::MouthFrown, 1.0f },
+			{ TEXT("surprised"), ECineFaceSlot::ExprSurprised, 1.0f },
+			{ TEXT("surprise"), ECineFaceSlot::ExprSurprised, 1.0f },
 			{ TEXT("pucker"), ECineFaceSlot::MouthPucker, 1.0f },
 			{ TEXT("kiss"), ECineFaceSlot::MouthPucker, 1.0f },
 			{ TEXT("funnel"), ECineFaceSlot::MouthFunnel, 1.0f },
@@ -193,6 +250,11 @@ namespace
 		Bind(ECineFaceSlot::EyeBlink, { TEXT("CTRL_expressions_eyeBlinkL"), TEXT("CTRL_expressions_eyeBlinkR") });
 		Bind(ECineFaceSlot::EyeWide, { TEXT("CTRL_expressions_eyeWidenL"), TEXT("CTRL_expressions_eyeWidenR") });
 		Bind(ECineFaceSlot::EyeSquint, { TEXT("CTRL_expressions_eyeSquintInnerL"), TEXT("CTRL_expressions_eyeSquintInnerR") });
+		// MetaHuman gaze — pupil look via eye aim controls
+		Bind(ECineFaceSlot::EyeLookLeft, { TEXT("CTRL_eyes_lookLeft") }, 1.0f);
+		Bind(ECineFaceSlot::EyeLookRight, { TEXT("CTRL_eyes_lookRight") }, 1.0f);
+		Bind(ECineFaceSlot::EyeLookUp, { TEXT("CTRL_eyes_lookUp") }, 1.0f);
+		Bind(ECineFaceSlot::EyeLookDown, { TEXT("CTRL_eyes_lookDown") }, 1.0f);
 	}
 }
 
@@ -234,6 +296,7 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 	int32 NumFuzzy = 0;
 	const FNamePattern* Fuzzy = FuzzyTable(NumFuzzy);
 	int32 Unrecognized = 0;
+	int32 VowelHits = 0; // A/I/U/E/O single-letter style
 
 	for (const UMorphTarget* Morph : Morphs)
 	{
@@ -247,6 +310,10 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 		if (const TPair<ECineFaceSlot, float>* Exact = ExactTable().Find(Norm))
 		{
 			Profile.Slots[(int32)Exact->Key].Add({ MorphName, Exact->Value });
+			if (Norm.Len() == 1 && (Norm[0] == 'a' || Norm[0] == 'i' || Norm[0] == 'u' || Norm[0] == 'e' || Norm[0] == 'o'))
+			{
+				++VowelHits;
+			}
 			continue;
 		}
 
@@ -262,10 +329,22 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 		Unrecognized += bMatched ? 0 : 1;
 	}
 
+	// VRM/MMD faces use exclusive A/I/U/E/O morphs — stacking them looks wrong.
+	if (VowelHits >= 3)
+	{
+		Profile.bExclusiveVisemes = true;
+		Profile.Notes.Add(TEXT("VRM/MMD-style exclusive vowel morphs detected — lipsync picks one shape per frame."));
+	}
+
 	Profile.Notes.Add(FString::Printf(TEXT("%d morph targets scanned, %d unrecognized."), Morphs.Num(), Unrecognized));
 	if (!Profile.HasSlot(ECineFaceSlot::JawOpen))
 	{
 		Profile.Notes.Add(TEXT("No jaw/mouth-open morph found — lipsync will be very subtle. Check the mesh's morph names."));
+	}
+	if (!Profile.HasSlot(ECineFaceSlot::EyeLookLeft) && !Profile.HasSlot(ECineFaceSlot::EyeLookRight)
+		&& !Profile.HasSlot(ECineFaceSlot::EyeLookUp) && !Profile.HasSlot(ECineFaceSlot::EyeLookDown))
+	{
+		Profile.Notes.Add(TEXT("No eye-look morphs found — gaze will stay fixed (blinks still work)."));
 	}
 	return Profile;
 }

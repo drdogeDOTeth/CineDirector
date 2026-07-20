@@ -42,5 +42,6 @@ private:
 	TSharedPtr<SEditableTextBox> DurationBox;
 	TSharedPtr<SCheckBox> TalkingCheck;
 	TSharedPtr<SCheckBox> BlinkCheck;
+	TSharedPtr<SCheckBox> IsolateVoiceCheck;
 	TSharedPtr<STextBlock> StatusBlock;
 };

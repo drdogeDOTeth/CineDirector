@@ -97,7 +97,10 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 		[
 			MakeRow(LOCTEXT("EmotionLabel", "Emotion"),
 				SAssignNew(EmotionBox, SEditableTextBox)
-				.HintText(FText::FromString(FCineFaceBaker::GetEmotionVocabulary())))
+				.HintText(LOCTEXT("EmotionHint", "Optional — leave blank to auto-detect from audio (or type: angry, happy, sad…)"))
+				.ToolTipText(FText::FromString(
+					FString(TEXT("Leave empty to infer emotion from the dialogue audio. "))
+					+ FCineFaceBaker::GetEmotionVocabulary())))
 		]
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
@@ -128,6 +131,17 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 					.IsChecked(ECheckBoxState::Checked)
 					[
 						SNew(STextBlock).Text(LOCTEXT("Blinks", "Auto blinks"))
+					]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(12.0f, 0.0f, 0.0f, 0.0f).VAlign(VAlign_Center)
+				[
+					SAssignNew(IsolateVoiceCheck, SCheckBox)
+					.IsChecked(ECheckBoxState::Checked)
+					.ToolTipText(LOCTEXT("IsolateVoiceTip",
+						"For songs/mixes: emphasize the vocal band and suppress steady instrumentals before lipsync and emotion analysis. "
+						"The full audio is still placed on the sequence for playback. Turn off for clean dialogue if you prefer."))
+					[
+						SNew(STextBlock).Text(LOCTEXT("IsolateVoice", "Isolate voice"))
 					]
 				])
 		]
@@ -253,7 +267,8 @@ FReply SCineDirectorFacePanel::OnGenerate()
 		return FReply::Handled();
 	}
 
-	Request.EmotionText = EmotionBox->GetText().ToString();
+	const FString ManualEmotion = EmotionBox->GetText().ToString().TrimStartAndEnd();
+	Request.EmotionText = ManualEmotion;
 	Request.bAutoBlink = BlinkCheck->IsChecked();
 	Request.DurationSeconds = FMath::Clamp(FCString::Atof(*DurationBox->GetText().ToString()), 0.5f, 600.0f);
 	if (Request.DurationSeconds < 0.51f)
@@ -264,6 +279,7 @@ FReply SCineDirectorFacePanel::OnGenerate()
 	const FString AudioPath = AudioPathBox->GetText().ToString().TrimStartAndEnd().TrimQuotes();
 	USoundWave* Sound = nullptr;
 	FString Error;
+	bool bEmotionFromAudio = false;
 
 	if (!AudioPath.IsEmpty())
 	{
@@ -276,9 +292,29 @@ FReply SCineDirectorFacePanel::OnGenerate()
 			return FReply::Handled();
 		}
 		Request.DurationSeconds = (float)Samples.Num() / FMath::Max(1, SampleRate);
+
+		// Analysis copy: optionally isolate vocals so songs don't drive off drums/bass.
+		// Playback still uses the original WavPath so the full mix is heard.
+		TArray<float> AnalysisSamples = Samples;
+		const bool bIsolated = IsolateVoiceCheck.IsValid() && IsolateVoiceCheck->IsChecked();
+		if (bIsolated)
+		{
+			FCineLipsync::IsolateVoice(AnalysisSamples, SampleRate);
+		}
+
 		if (TalkingCheck->IsChecked())
 		{
-			Request.Visemes = FCineLipsync::AnalyzeAudio(Samples, SampleRate);
+			Request.Visemes = FCineLipsync::AnalyzeAudio(AnalysisSamples, SampleRate);
+		}
+		// Auto-pick emotion from the dialogue when the user left the box blank.
+		if (ManualEmotion.IsEmpty())
+		{
+			const FString Estimated = FCineLipsync::EstimateEmotionFromAudio(AnalysisSamples, SampleRate);
+			if (!Estimated.IsEmpty())
+			{
+				Request.EmotionText = Estimated;
+				bEmotionFromAudio = true;
+			}
 		}
 		Sound = FCineFaceBaker::ImportAudioAsset(WavPath, Error);
 		if (!Sound)
@@ -304,11 +340,17 @@ FReply SCineDirectorFacePanel::OnGenerate()
 		return FReply::Handled();
 	}
 
+	const FString EmotionNote = Request.EmotionText.IsEmpty()
+		? FString()
+		: FString::Printf(TEXT(" (%s%s)"), bEmotionFromAudio ? TEXT("auto: ") : TEXT(""), *Request.EmotionText);
+
+	const bool bIsolated = !AudioPath.IsEmpty() && IsolateVoiceCheck.IsValid() && IsolateVoiceCheck->IsChecked();
 	SetStatus(FString::Printf(
-		TEXT("Done: %s — %.1fs of %s%s layered onto '%s' at the sequence start. %s"),
+		TEXT("Done: %s — %.1fs of %s%s%s layered onto '%s' at the sequence start. %s"),
 		*FaceAnim->GetName(), Request.DurationSeconds,
 		Request.Visemes.Num() > 0 ? (AudioPath.IsEmpty() ? TEXT("procedural talking") : TEXT("audio-driven lipsync")) : TEXT("expression"),
-		Request.EmotionText.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (%s)"), *Request.EmotionText),
+		bIsolated ? TEXT(" [voice-isolated]") : TEXT(""),
+		*EmotionNote,
 		*Actor->GetActorLabel(),
 		Sound ? TEXT("Audio placed on the sequence's audio track.") : TEXT("")));
 	return FReply::Handled();

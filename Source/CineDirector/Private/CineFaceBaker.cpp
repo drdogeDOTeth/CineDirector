@@ -44,27 +44,41 @@ namespace
 		std::initializer_list<FSlotValue> Pose;
 	};
 
+	/**
+	 * Emotion poses. Full-face Expr* slots are driven hard so VRM/MMD Joy/Angry/
+	 * Sorrow/Surprised morphs read clearly; micro-slots (brows, squint, etc.)
+	 * still fire for ARKit / MetaHuman faces that lack full-face morphs.
+	 */
 	const FEmotionDef GEmotions[] = {
 		{ TEXT("scared,afraid,terrified,fear,frightened"),
-			{ { ECineFaceSlot::BrowSad, 0.7f }, { ECineFaceSlot::BrowUp, 0.5f }, { ECineFaceSlot::EyeWide, 0.9f },
-			  { ECineFaceSlot::MouthFrown, 0.3f }, { ECineFaceSlot::MouthPress, 0.2f } } },
+			{ { ECineFaceSlot::ExprSurprised, 0.55f },
+			  { ECineFaceSlot::BrowSad, 0.85f }, { ECineFaceSlot::BrowUp, 0.7f }, { ECineFaceSlot::EyeWide, 1.0f },
+			  { ECineFaceSlot::MouthFrown, 0.45f }, { ECineFaceSlot::MouthPress, 0.35f } } },
 		{ TEXT("angry,furious,mad,rage,pissed"),
-			{ { ECineFaceSlot::BrowDown, 1.0f }, { ECineFaceSlot::EyeSquint, 0.5f }, { ECineFaceSlot::NoseSneer, 0.6f },
-			  { ECineFaceSlot::MouthPress, 0.5f }, { ECineFaceSlot::MouthFrown, 0.4f } } },
+			{ { ECineFaceSlot::ExprAngry, 1.0f },
+			  { ECineFaceSlot::BrowDown, 1.0f }, { ECineFaceSlot::EyeSquint, 0.65f }, { ECineFaceSlot::NoseSneer, 0.75f },
+			  { ECineFaceSlot::MouthPress, 0.65f }, { ECineFaceSlot::MouthFrown, 0.55f } } },
 		{ TEXT("happy,joyful,cheerful,smiling,glad"),
-			{ { ECineFaceSlot::MouthSmile, 0.8f }, { ECineFaceSlot::EyeSquint, 0.25f }, { ECineFaceSlot::BrowUp, 0.2f } } },
+			// Kept intentionally mild — VRM Joy morphs are full-face and read as a
+			// super-wide grin at high weights. "very happy" still only reaches ~0.55.
+			{ { ECineFaceSlot::ExprHappy, 0.45f },
+			  { ECineFaceSlot::MouthSmile, 0.4f }, { ECineFaceSlot::EyeSquint, 0.18f }, { ECineFaceSlot::BrowUp, 0.12f } } },
 		{ TEXT("sad,somber,mournful,depressed,grief"),
-			{ { ECineFaceSlot::BrowSad, 0.8f }, { ECineFaceSlot::MouthFrown, 0.7f }, { ECineFaceSlot::EyeBlink, 0.1f } } },
+			{ { ECineFaceSlot::ExprSad, 1.0f },
+			  { ECineFaceSlot::BrowSad, 0.95f }, { ECineFaceSlot::MouthFrown, 0.85f }, { ECineFaceSlot::EyeBlink, 0.15f } } },
 		{ TEXT("surprised,shocked,amazed,startled"),
-			{ { ECineFaceSlot::BrowUp, 1.0f }, { ECineFaceSlot::EyeWide, 1.0f }, { ECineFaceSlot::JawOpen, 0.35f } } },
+			{ { ECineFaceSlot::ExprSurprised, 1.0f },
+			  { ECineFaceSlot::BrowUp, 1.0f }, { ECineFaceSlot::EyeWide, 1.0f }, { ECineFaceSlot::JawOpen, 0.4f } } },
 		{ TEXT("disgusted,disgust,revolted,grossed"),
-			{ { ECineFaceSlot::NoseSneer, 0.9f }, { ECineFaceSlot::BrowDown, 0.5f }, { ECineFaceSlot::MouthFrown, 0.5f },
-			  { ECineFaceSlot::EyeSquint, 0.4f } } },
+			{ { ECineFaceSlot::ExprAngry, 0.45f },
+			  { ECineFaceSlot::NoseSneer, 1.0f }, { ECineFaceSlot::BrowDown, 0.65f }, { ECineFaceSlot::MouthFrown, 0.65f },
+			  { ECineFaceSlot::EyeSquint, 0.55f } } },
 		{ TEXT("pain,hurt,agony,wincing"),
-			{ { ECineFaceSlot::EyeSquint, 0.9f }, { ECineFaceSlot::BrowSad, 0.6f }, { ECineFaceSlot::NoseSneer, 0.5f },
-			  { ECineFaceSlot::MouthWide, 0.4f } } },
+			{ { ECineFaceSlot::ExprSad, 0.5f },
+			  { ECineFaceSlot::EyeSquint, 1.0f }, { ECineFaceSlot::BrowSad, 0.75f }, { ECineFaceSlot::NoseSneer, 0.6f },
+			  { ECineFaceSlot::MouthWide, 0.5f } } },
 		{ TEXT("suspicious,wary,distrustful,skeptical"),
-			{ { ECineFaceSlot::BrowDown, 0.4f }, { ECineFaceSlot::EyeSquint, 0.6f }, { ECineFaceSlot::MouthPress, 0.3f } } },
+			{ { ECineFaceSlot::BrowDown, 0.55f }, { ECineFaceSlot::EyeSquint, 0.75f }, { ECineFaceSlot::MouthPress, 0.45f } } },
 		{ TEXT("calm,neutral,relaxed,blank"), {} },
 	};
 
@@ -75,11 +89,11 @@ namespace
 		float Intensity = 1.0f;
 		if (Lower.Contains(TEXT("slightly")) || Lower.Contains(TEXT("subtle")) || Lower.Contains(TEXT("a bit")))
 		{
-			Intensity = 0.5f;
+			Intensity = 0.55f;
 		}
 		else if (Lower.Contains(TEXT("very")) || Lower.Contains(TEXT("extremely")) || Lower.Contains(TEXT("super")))
 		{
-			Intensity = 1.3f;
+			Intensity = 1.0f; // already maxed; clamp keeps us at 1
 		}
 
 		int32 Matched = 0;
@@ -108,6 +122,132 @@ namespace
 			UE_LOG(LogCineDirectorFaceBake, Warning, TEXT("No emotion recognized in \"%s\" — treating as neutral."), *Segment);
 		}
 	}
+
+	/**
+	 * Natural eye motion: hold a gaze, then saccade to a new offset.
+	 * Writes into LookLeft/Right/Up/Down (opposing axes are mutually exclusive).
+	 */
+	void BakeEyeGaze(TArray<TArray<float>>& Timeline, int32 NumFrames, int32 Fps, int32 Seed)
+	{
+		const int32 SlotL = (int32)ECineFaceSlot::EyeLookLeft;
+		const int32 SlotR = (int32)ECineFaceSlot::EyeLookRight;
+		const int32 SlotU = (int32)ECineFaceSlot::EyeLookUp;
+		const int32 SlotD = (int32)ECineFaceSlot::EyeLookDown;
+
+		FRandomStream Rand(Seed ^ 0xE4E5A11);
+		float Time = Rand.FRandRange(0.15f, 0.6f);
+		// Current held gaze (X = right-left, Y = up-down), range roughly -1..1.
+		float GazeX = 0.0f;
+		float GazeY = 0.0f;
+
+		auto WriteGaze = [&](int32 Frame, float X, float Y)
+		{
+			if (Frame < 0 || Frame >= NumFrames) return;
+			Timeline[SlotL][Frame] = X < 0.0f ? -X : 0.0f;
+			Timeline[SlotR][Frame] = X > 0.0f ?  X : 0.0f;
+			Timeline[SlotD][Frame] = Y < 0.0f ? -Y : 0.0f;
+			Timeline[SlotU][Frame] = Y > 0.0f ?  Y : 0.0f;
+		};
+
+		// Fill initial hold
+		for (int32 f = 0; f < NumFrames; ++f)
+		{
+			WriteGaze(f, GazeX, GazeY);
+		}
+
+		while (Time * Fps < NumFrames)
+		{
+			// New target: mostly near-center, occasional glance aside.
+			const float Mag = Rand.FRand() < 0.35f
+				? Rand.FRandRange(0.35f, 0.85f)   // glance
+				: Rand.FRandRange(0.05f, 0.35f);  // subtle drift
+			const float Angle = Rand.FRandRange(0.0f, 2.0f * PI);
+			const float TargetX = FMath::Cos(Angle) * Mag;
+			const float TargetY = FMath::Sin(Angle) * Mag * 0.55f; // vertical less extreme
+
+			const int32 SacStart = FMath::RoundToInt32(Time * Fps);
+			const int32 SacLen = FMath::Max(1, FMath::RoundToInt32(Rand.FRandRange(0.04f, 0.09f) * Fps)); // ~1–3 frames
+			const float HoldSec = Rand.FRandRange(0.45f, 1.8f);
+			const int32 HoldEnd = FMath::Min(NumFrames, SacStart + SacLen + FMath::RoundToInt32(HoldSec * Fps));
+
+			for (int32 f = SacStart; f < HoldEnd; ++f)
+			{
+				float T = 1.0f;
+				if (f < SacStart + SacLen)
+				{
+					T = (float)(f - SacStart + 1) / SacLen;
+					// Ease-out so the saccade snaps then settles.
+					T = 1.0f - FMath::Square(1.0f - T);
+				}
+				const float X = FMath::Lerp(GazeX, TargetX, T);
+				const float Y = FMath::Lerp(GazeY, TargetY, T);
+				WriteGaze(f, X, Y);
+			}
+
+			GazeX = TargetX;
+			GazeY = TargetY;
+			Time = (float)HoldEnd / Fps + Rand.FRandRange(0.0f, 0.15f);
+		}
+	}
+
+	/**
+	 * For VRM/MMD exclusive vowel morphs: keep only the dominant mouth shape
+	 * so A/I/U/E/O never stack into a half-open mush.
+	 */
+	void ApplyExclusiveVisemes(TArray<TArray<float>>& Timeline, int32 NumFrames)
+	{
+		const int32 Jaw = (int32)ECineFaceSlot::JawOpen;
+		const int32 Wide = (int32)ECineFaceSlot::MouthWide;
+		const int32 Pucker = (int32)ECineFaceSlot::MouthPucker;
+		const int32 Funnel = (int32)ECineFaceSlot::MouthFunnel;
+		const int32 Close = (int32)ECineFaceSlot::MouthClose;
+
+		for (int32 f = 0; f < NumFrames; ++f)
+		{
+			// Closures win: shut everything else.
+			if (Timeline[Close][f] > 0.5f)
+			{
+				Timeline[Jaw][f] = 0.0f;
+				Timeline[Wide][f] = 0.0f;
+				Timeline[Pucker][f] = 0.0f;
+				Timeline[Funnel][f] = 0.0f;
+				continue;
+			}
+
+			const float Vals[4] = {
+				Timeline[Jaw][f],
+				Timeline[Wide][f],
+				Timeline[Pucker][f],
+				Timeline[Funnel][f]
+			};
+			int32 Winner = 0;
+			float Best = Vals[0];
+			for (int32 i = 1; i < 4; ++i)
+			{
+				if (Vals[i] > Best)
+				{
+					Best = Vals[i];
+					Winner = i;
+				}
+			}
+
+			// Soft floor: if nothing is open, leave all zero (mouth shut).
+			if (Best < 0.06f)
+			{
+				Timeline[Jaw][f] = 0.0f;
+				Timeline[Wide][f] = 0.0f;
+				Timeline[Pucker][f] = 0.0f;
+				Timeline[Funnel][f] = 0.0f;
+				continue;
+			}
+
+			// Zero losers; keep winner at full measured strength.
+			Timeline[Jaw][f]    = (Winner == 0) ? Best : 0.0f;
+			Timeline[Wide][f]   = (Winner == 1) ? Best : 0.0f;
+			Timeline[Pucker][f] = (Winner == 2) ? Best : 0.0f;
+			Timeline[Funnel][f] = (Winner == 3) ? Best : 0.0f;
+		}
+	}
 }
 
 FString FCineFaceBaker::GetEmotionVocabulary()
@@ -134,7 +274,7 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		FMath::Max(2, FMath::RoundToInt32(Request.DurationSeconds * Fps)));
 	constexpr int32 SlotCount = (int32)ECineFaceSlot::Count;
 
-	// --- Assemble per-slot timelines: emotion base, then lipsync, then blinks.
+	// --- Assemble per-slot timelines: emotion base, then lipsync, then blinks + gaze.
 	TArray<TArray<float>> Timeline;
 	Timeline.SetNum(SlotCount);
 	for (TArray<float>& T : Timeline)
@@ -148,7 +288,7 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	{
 		Segments.Add(Request.EmotionText);
 	}
-	const int32 RampFrames = FMath::Max(1, FMath::RoundToInt32(0.4f * Fps));
+	const int32 RampFrames = FMath::Max(1, FMath::RoundToInt32(0.35f * Fps));
 	TArray<float> PrevPose, NextPose;
 	PrevPose.SetNumZeroed(SlotCount);
 	for (int32 SegIndex = 0; SegIndex < Segments.Num(); ++SegIndex)
@@ -170,15 +310,62 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		PrevPose = NextPose;
 	}
 
+	// Lipsync on top of the emotion base. Closures kill jaw; on meshes without
+	// a MouthClose morph the zeroed jaw alone fully shuts the mouth.
 	for (int32 Frame = 0; Frame < Request.Visemes.Num() && Frame < NumFrames; ++Frame)
 	{
 		const FCineVisemeFrame& V = Request.Visemes[Frame];
-		Timeline[(int32)ECineFaceSlot::JawOpen][Frame] += V.Jaw * (1.0f - V.Close);
-		Timeline[(int32)ECineFaceSlot::MouthClose][Frame] += V.Close;
-		Timeline[(int32)ECineFaceSlot::MouthPress][Frame] += V.Close * 0.6f;
-		Timeline[(int32)ECineFaceSlot::MouthWide][Frame] += V.Wide + V.Sibilant * 0.4f;
-		Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] += V.Pucker;
-		Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] += V.Pucker * 0.5f;
+		const float Open = FMath::Clamp(V.Jaw * (1.0f - V.Close), 0.0f, 1.0f);
+		Timeline[(int32)ECineFaceSlot::JawOpen][Frame] =
+			FMath::Max(Timeline[(int32)ECineFaceSlot::JawOpen][Frame] * (1.0f - V.Close), Open);
+		Timeline[(int32)ECineFaceSlot::MouthClose][Frame] =
+			FMath::Max(Timeline[(int32)ECineFaceSlot::MouthClose][Frame], V.Close);
+		Timeline[(int32)ECineFaceSlot::MouthPress][Frame] =
+			FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPress][Frame], V.Close * 0.7f);
+		// Shape channels: replace (not pile onto) emotion mouth shapes during speech
+		// so smile + wide jaw don't leave the mouth stuck half-open.
+		if (Open > 0.05f || V.Close > 0.3f)
+		{
+			const float ShapeWide = (V.Wide + V.Sibilant * 0.4f) * (1.0f - V.Close);
+			const float ShapePucker = V.Pucker * (1.0f - V.Close);
+			Timeline[(int32)ECineFaceSlot::MouthWide][Frame] =
+				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthWide][Frame] * 0.35f, ShapeWide);
+			Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] =
+				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] * 0.35f, ShapePucker);
+			Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] =
+				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] * 0.35f, ShapePucker * 0.5f);
+		}
+	}
+
+	if (Request.Profile.bExclusiveVisemes)
+	{
+		ApplyExclusiveVisemes(Timeline, NumFrames);
+	}
+
+	// Hard shut floor: any frame where jaw + shapes are all tiny → force zero.
+	// Fixes residual half-open mouths after smoothing on both ARKit and VRM.
+	{
+		const int32 Jaw = (int32)ECineFaceSlot::JawOpen;
+		const int32 Wide = (int32)ECineFaceSlot::MouthWide;
+		const int32 Pucker = (int32)ECineFaceSlot::MouthPucker;
+		const int32 Funnel = (int32)ECineFaceSlot::MouthFunnel;
+		const int32 Close = (int32)ECineFaceSlot::MouthClose;
+		for (int32 f = 0; f < NumFrames; ++f)
+		{
+			const float OpenAmt = Timeline[Jaw][f] + Timeline[Wide][f] + Timeline[Pucker][f] + Timeline[Funnel][f];
+			if (OpenAmt < 0.08f)
+			{
+				Timeline[Jaw][f] = 0.0f;
+				Timeline[Wide][f] = 0.0f;
+				Timeline[Pucker][f] = 0.0f;
+				Timeline[Funnel][f] = 0.0f;
+				// Prefer an explicit close if the morph exists; harmless if not.
+				if (Timeline[Close][f] < 0.3f)
+				{
+					Timeline[Close][f] = 0.0f; // don't force-close morph during pure rest
+				}
+			}
+		}
 	}
 
 	if (Request.bAutoBlink)
@@ -204,6 +391,16 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 			}
 			NextBlink += bNervous ? Rand.FRandRange(1.2f, 2.5f) : Rand.FRandRange(2.5f, 5.0f);
 		}
+	}
+
+	// Eye look / saccades — only worth baking when the mesh has look morphs.
+	const bool bHasGaze = Request.Profile.HasSlot(ECineFaceSlot::EyeLookLeft)
+		|| Request.Profile.HasSlot(ECineFaceSlot::EyeLookRight)
+		|| Request.Profile.HasSlot(ECineFaceSlot::EyeLookUp)
+		|| Request.Profile.HasSlot(ECineFaceSlot::EyeLookDown);
+	if (bHasGaze)
+	{
+		BakeEyeGaze(Timeline, NumFrames, Fps, NumFrames * 13 + 11);
 	}
 
 	for (TArray<float>& T : Timeline)
@@ -262,8 +459,9 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	Package->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(Anim);
 
-	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Baked '%s': %d curves, %d frames (%.1fs)."),
-		*AssetName, CurvesWritten, NumFrames, (float)NumFrames / Fps);
+	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Baked '%s': %d curves, %d frames (%.1fs). exclusiveVisemes=%d gaze=%d"),
+		*AssetName, CurvesWritten, NumFrames, (float)NumFrames / Fps,
+		Request.Profile.bExclusiveVisemes ? 1 : 0, bHasGaze ? 1 : 0);
 	return Anim;
 }
 

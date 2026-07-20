@@ -22,8 +22,28 @@ public:
 	static bool LoadAudioMono(const FString& Path, TArray<float>& OutSamples, int32& OutSampleRate,
 		FString& OutWavPath, FString& OutError);
 
+	/**
+	 * Emphasize the vocal band and suppress steady instrumental beds so lipsync /
+	 * emotion analysis can drive off a song's singing rather than the full mix.
+	 * In-place on mono samples. Does not affect the file imported for playback.
+	 *
+	 * Pipeline: voice-range bandpass (≈120–4000 Hz) → soft noise gate against the
+	 * quietest floor → syllable-rate envelope gate (kills sustained pads/bass that
+	 * lack speech-like modulation). Not a full AI stem split, but enough for most
+	 * pop/rock mixes where the vocal sits in the midrange.
+	 */
+	static void IsolateVoice(TArray<float>& InOutMono, int32 SampleRate);
+
 	static TArray<FCineVisemeFrame> AnalyzeAudio(const TArray<float>& Mono, int32 SampleRate, int32 Fps = 30);
 
 	/** Procedural syllables/pauses for "talking without audio", deterministic per seed. */
 	static TArray<FCineVisemeFrame> SynthesizeTalking(float DurationSeconds, int32 Fps = 30, int32 Seed = 0);
+
+	/**
+	 * Infer plain-language emotion text from dialogue audio (energy, brightness,
+	 * dynamics, pause rate). Returns phrases the face baker already understands
+	 * ("angry", "slightly sad then very happy", …). Empty only if audio is silent.
+	 * Manual Emotion box text should override this when the user types one.
+	 */
+	static FString EstimateEmotionFromAudio(const TArray<float>& Mono, int32 SampleRate);
 };

@@ -19,7 +19,11 @@ struct FCineFaceBakeRequest
 	/** Mouth shapes from audio or synthesis; may be empty (emotion-only). */
 	TArray<FCineVisemeFrame> Visemes;
 
-	/** Plain-language emotions, "scared" or "calm then angry"; empty = neutral. */
+	/**
+	 * Plain-language emotions, "scared" or "calm then angry".
+	 * Empty = neutral. When left blank in the UI and dialogue audio is present,
+	 * the panel fills this via FCineLipsync::EstimateEmotionFromAudio.
+	 */
 	FString EmotionText;
 
 	bool bAutoBlink = true;

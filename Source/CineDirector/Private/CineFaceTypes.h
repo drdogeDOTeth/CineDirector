@@ -27,6 +27,19 @@ enum class ECineFaceSlot : uint8
 	EyeWide,
 	EyeSquint,
 
+	// Gaze — look-direction morphs (ARKit eyeLook*, VRM LookLeft/Right/Up/Down).
+	EyeLookLeft,
+	EyeLookRight,
+	EyeLookUp,
+	EyeLookDown,
+
+	// Full-face expression morphs (VRM Joy/Angry/Sorrow/Surprised, etc.).
+	// Driven as complete poses so anime-style faces read clearly.
+	ExprHappy,
+	ExprAngry,
+	ExprSad,
+	ExprSurprised,
+
 	Count
 };
 
@@ -47,6 +60,12 @@ struct FCineFaceProfile
 
 	/** MetaHuman face detected: curves are CTRL_expressions_* rig-logic controls, not morphs. */
 	bool bMetaHuman = false;
+
+	/**
+	 * Mesh uses mutually-exclusive vowel morphs (VRM/MMD A/I/U/E/O). When set,
+	 * lipsync picks one dominant mouth shape per frame instead of layering ARKit-style.
+	 */
+	bool bExclusiveVisemes = false;
 
 	/** Per-slot curve targets; an empty array means the slot is unmapped on this mesh. */
 	TArray<FCineFaceCurveTarget> Slots[(int32)ECineFaceSlot::Count];
