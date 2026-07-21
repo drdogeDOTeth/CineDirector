@@ -728,45 +728,81 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		const float Gate = Energy[i] / FMath::Max(SpeechGate, 1e-6f);
 		FCineVisemeFrame& F = Frames[i];
 
-		if (Gate < 1.0f)
+		// Below speech floor: silence (close applied in the final pass).
+		if (Gate < 0.45f)
 		{
-			if (Gate < 0.45f)
-			{
-				continue;
-			}
-			F.Jaw = E * Gate * 0.6f;
 			continue;
 		}
 
-		F.Jaw = E;
-		const float ShapeAmt = FMath::Clamp(E * 1.3f, 0.0f, 1.0f);
-		const float WideScore = FMath::Clamp(HighRatio[i] * 2.4f - 0.3f, 0.0f, 1.0f);
-		const float PuckerScore = FMath::Clamp(LowRatio[i] * 2.6f - 0.35f, 0.0f, 1.0f);
-		const float FunnelScore = FMath::Clamp(
-			MidRatio[i] * 2.2f + LowRatio[i] * 0.65f - HighRatio[i] * 0.75f - 0.1f, 0.0f, 1.0f);
+		// Open amount from energy; marginal frames still get full shape analysis
+		// so A/I/U/O aren't reduced to pure jaw open/close.
+		const float OpenAmt = (Gate < 1.0f)
+			? E * FMath::Clamp(Gate, 0.0f, 1.0f) * 0.9f
+			: E;
 
-		F.Wide = ShapeAmt * WideScore;
-		F.Pucker = ShapeAmt * PuckerScore;
-		F.Funnel = ShapeAmt * FunnelScore;
+		const float L = LowRatio[i];
+		const float M = MidRatio[i];
+		const float H = HighRatio[i];
 
-		// Don't leave pure jaw-only on VRM (needs I/U/O morphs to read).
-		if (E > 0.22f)
-		{
-			const float MaxShape = FMath::Max3(F.Wide, F.Pucker, F.Funnel);
-			if (MaxShape < 0.24f)
-			{
-				F.Funnel = FMath::Max(F.Funnel, E * 0.5f);
-				F.Wide = FMath::Max(F.Wide, E * 0.25f);
-			}
-		}
+		// Competitive vowel scores (formant-ish band cues).
+		// A (ah): open mid, not too bright/dark.
+		// I/E (ee/eh): high-band energy.
+		// U (oo): low-band, dark.
+		// O (oh): mid-low round.
+		float ScoreA = FMath::Clamp(M * 2.05f + L * 0.5f - H * 0.9f + 0.10f, 0.0f, 1.0f);
+		float ScoreI = FMath::Clamp(H * 2.75f - L * 1.05f - M * 0.12f - 0.10f, 0.0f, 1.0f);
+		float ScoreU = FMath::Clamp(L * 2.95f - H * 1.4f - M * 0.28f - 0.16f, 0.0f, 1.0f);
+		float ScoreO = FMath::Clamp(M * 1.55f + L * 1.2f - H * 1.15f - 0.06f, 0.0f, 1.0f);
 
 		if (Sibilance[i] > 1.15f && E > 0.08f)
 		{
 			F.Sibilant = FMath::Clamp((Sibilance[i] - 1.15f) * 0.85f, 0.0f, 1.0f);
-			F.Jaw *= 0.38f;
-			F.Wide = FMath::Max(F.Wide, F.Sibilant * 0.5f);
-			F.Pucker *= 0.35f;
-			F.Funnel *= 0.35f;
+			// S/SH: teeth + slight width, not a big open A.
+			ScoreI = FMath::Max(ScoreI, F.Sibilant);
+			ScoreA *= 0.28f;
+			ScoreU *= 0.25f;
+			ScoreO *= 0.28f;
+		}
+
+		// Softmax so one vowel leads without always defaulting to Jaw=energy.
+		constexpr float Sharp = 2.6f;
+		float WA = FMath::Pow(FMath::Max(ScoreA, 1e-4f), Sharp);
+		float WI = FMath::Pow(FMath::Max(ScoreI, 1e-4f), Sharp);
+		float WU = FMath::Pow(FMath::Max(ScoreU, 1e-4f), Sharp);
+		float WO = FMath::Pow(FMath::Max(ScoreO, 1e-4f), Sharp);
+		const float WSum = WA + WI + WU + WO;
+
+		// Amplitude lives on the shape channels (VRM A/I/U/O are exclusive morphs).
+		const float ShapeAmt = FMath::Clamp(OpenAmt * 1.28f, 0.0f, 1.0f);
+		F.Jaw = ShapeAmt * (WA / WSum);
+		F.Wide = ShapeAmt * (WI / WSum);
+		F.Pucker = ShapeAmt * (WU / WSum);
+		F.Funnel = ShapeAmt * (WO / WSum);
+
+		// Weak spectral contrast: still seed all four so exclusive mode isn't
+		// pure A open/close — lightly cycle toward O/I/U with energy.
+		const float MaxScore = FMath::Max(ScoreA, FMath::Max3(ScoreI, ScoreU, ScoreO));
+		if (MaxScore < 0.20f && OpenAmt > 0.16f)
+		{
+			// Pseudo-syllable phase from frame index so weak frames still vary.
+			const float Phase = FMath::Fmod((float)i * 0.37f, 4.0f);
+			if (Phase < 1.0f)
+			{
+				F.Jaw = FMath::Max(F.Jaw, OpenAmt * 0.85f);
+			}
+			else if (Phase < 2.0f)
+			{
+				F.Wide = FMath::Max(F.Wide, OpenAmt * 0.8f);
+				F.Jaw = FMath::Max(F.Jaw, OpenAmt * 0.2f);
+			}
+			else if (Phase < 3.0f)
+			{
+				F.Pucker = FMath::Max(F.Pucker, OpenAmt * 0.85f);
+			}
+			else
+			{
+				F.Funnel = FMath::Max(F.Funnel, OpenAmt * 0.85f);
+			}
 		}
 
 		if (i > 1 && i + 2 < NumFrames)
@@ -779,6 +815,7 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 				F.Wide = 0.0f;
 				F.Pucker = 0.0f;
 				F.Funnel = 0.0f;
+				F.Sibilant = 0.0f;
 			}
 		}
 	}
@@ -826,8 +863,34 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		}
 	}
 
-	UE_LOG(LogCineDirectorLipsync, Log, TEXT("Analyzed %.1fs of audio into %d lipsync frames (gate=%.4f normPeak=%.4f)."),
-		(float)Mono.Num() / SampleRate, NumFrames, SpeechGate, NormPeak);
+	// Winner counts so we can see A/I/U/O balance in the Output Log.
+	int32 WinA = 0, WinI = 0, WinU = 0, WinO = 0, WinClose = 0, WinRest = 0;
+	float PeakA = 0, PeakI = 0, PeakU = 0, PeakO = 0;
+	for (int32 i = 0; i < NumFrames; ++i)
+	{
+		const FCineVisemeFrame& F = Frames[i];
+		PeakA = FMath::Max(PeakA, F.Jaw);
+		PeakI = FMath::Max(PeakI, F.Wide);
+		PeakU = FMath::Max(PeakU, F.Pucker);
+		PeakO = FMath::Max(PeakO, F.Funnel);
+		if (F.Close > 0.5f) { ++WinClose; continue; }
+		const float Vals[4] = { F.Jaw, F.Wide, F.Pucker, F.Funnel };
+		int32 W = 0;
+		float Best = Vals[0];
+		for (int32 k = 1; k < 4; ++k)
+		{
+			if (Vals[k] > Best) { Best = Vals[k]; W = k; }
+		}
+		if (Best < 0.06f) { ++WinRest; }
+		else if (W == 0) { ++WinA; }
+		else if (W == 1) { ++WinI; }
+		else if (W == 2) { ++WinU; }
+		else { ++WinO; }
+	}
+	UE_LOG(LogCineDirectorLipsync, Log,
+		TEXT("Analyzed %.1fs → %d frames (gate=%.4f). winners A/I/U/O/close/rest=%d/%d/%d/%d/%d/%d peaks A=%.2f I=%.2f U=%.2f O=%.2f"),
+		(float)Mono.Num() / SampleRate, NumFrames, SpeechGate,
+		WinA, WinI, WinU, WinO, WinClose, WinRest, PeakA, PeakI, PeakU, PeakO);
 	return Frames;
 }
 
@@ -844,8 +907,9 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 	while (Time < DurationSeconds)
 	{
 		const float SylLen = Rand.FRandRange(0.09f, 0.22f);
-		const float Peak = Rand.FRandRange(0.45f, 0.95f);
-		const int32 Shape = Rand.RandRange(0, 3); // 0/1 neutral-ish, 2 wide, 3 round
+		const float Peak = Rand.FRandRange(0.5f, 0.98f);
+		// One exclusive vowel per syllable: 0=A, 1=I, 2=U, 3=O
+		const int32 Shape = Rand.RandRange(0, 3);
 
 		const int32 Start = FMath::RoundToInt32(Time * Fps);
 		const int32 Len = FMath::Max(2, FMath::RoundToInt32(SylLen * Fps));
@@ -855,9 +919,13 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 			// Sin envelope returns to zero at both ends → full close between syllables.
 			const float Env = FMath::Sin(T * PI) * Peak;
 			FCineVisemeFrame& F = Frames[Start + i];
-			F.Jaw = FMath::Max(F.Jaw, Env);
-			if (Shape == 2) { F.Wide = FMath::Max(F.Wide, Env * 0.7f); }
-			if (Shape == 3) { F.Pucker = FMath::Max(F.Pucker, Env * 0.8f); }
+			switch (Shape)
+			{
+			case 1: F.Wide = FMath::Max(F.Wide, Env); break;
+			case 2: F.Pucker = FMath::Max(F.Pucker, Env); break;
+			case 3: F.Funnel = FMath::Max(F.Funnel, Env); break;
+			default: F.Jaw = FMath::Max(F.Jaw, Env); break;
+			}
 		}
 
 		// Brief closure at the end of every syllable (not just pauses).
@@ -866,6 +934,9 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 		{
 			Frames[CloseAt].Close = 1.0f;
 			Frames[CloseAt].Jaw = 0.0f;
+			Frames[CloseAt].Wide = 0.0f;
+			Frames[CloseAt].Pucker = 0.0f;
+			Frames[CloseAt].Funnel = 0.0f;
 		}
 
 		Time += SylLen + Rand.FRandRange(0.03f, 0.10f);
@@ -893,6 +964,7 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 	SmoothChannel(&FCineVisemeFrame::Jaw, 0.70f, 0.65f);
 	SmoothChannel(&FCineVisemeFrame::Wide, 0.50f, 0.55f);
 	SmoothChannel(&FCineVisemeFrame::Pucker, 0.50f, 0.55f);
+	SmoothChannel(&FCineVisemeFrame::Funnel, 0.50f, 0.55f);
 	SmoothChannel(&FCineVisemeFrame::Close, 0.90f, 0.70f);
 	return Frames;
 }
@@ -964,8 +1036,16 @@ FString FCineLipsync::EstimateEmotionFromAudio(const TArray<float>& Mono, int32 
 		if (Speech < 2)
 		{
 			// Keep prior emotion across short silences instead of inserting calm.
-			if (Labels.Num() > 0) { Labels.Add(Labels.Last()); }
-			else { Labels.Add(TEXT("happy")); }
+			// Copy first — Add(Labels.Last()) is illegal (ref into container being modified).
+			if (Labels.Num() > 0)
+			{
+				const FString Carry = Labels.Last();
+				Labels.Add(Carry);
+			}
+			else
+			{
+				Labels.Add(TEXT("happy"));
+			}
 			continue;
 		}
 

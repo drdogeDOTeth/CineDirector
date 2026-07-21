@@ -203,6 +203,8 @@ namespace
 	/**
 	 * For VRM/MMD exclusive vowel morphs: keep only the dominant mouth shape
 	 * so A/I/U/E/O never stack into a half-open mush.
+	 * Slightly de-biases pure Jaw (A) so I/U/O can win when scores are close,
+	 * and holds the previous winner unless clearly beaten (less frame flicker).
 	 */
 	void ApplyExclusiveVisemes(TArray<TArray<float>>& Timeline, int32 NumFrames)
 	{
@@ -211,6 +213,10 @@ namespace
 		const int32 Pucker = (int32)ECineFaceSlot::MouthPucker;
 		const int32 Funnel = (int32)ECineFaceSlot::MouthFunnel;
 		const int32 Close = (int32)ECineFaceSlot::MouthClose;
+
+		// Weight: A slightly down, I/U/O slightly up so shapes aren't drowned by open energy.
+		const float Bias[4] = { 0.90f, 1.12f, 1.14f, 1.12f };
+		int32 PrevWinner = -1;
 
 		for (int32 f = 0; f < NumFrames; ++f)
 		{
@@ -221,6 +227,7 @@ namespace
 				Timeline[Wide][f] = 0.0f;
 				Timeline[Pucker][f] = 0.0f;
 				Timeline[Funnel][f] = 0.0f;
+				PrevWinner = -1;
 				continue;
 			}
 
@@ -230,29 +237,44 @@ namespace
 				Timeline[Pucker][f],
 				Timeline[Funnel][f]
 			};
+			float Weighted[4];
 			int32 Winner = 0;
-			float Best = Vals[0];
-			for (int32 i = 1; i < 4; ++i)
+			float BestW = -1.0f;
+			for (int32 i = 0; i < 4; ++i)
 			{
-				if (Vals[i] > Best)
+				Weighted[i] = Vals[i] * Bias[i];
+				if (Weighted[i] > BestW)
 				{
-					Best = Vals[i];
+					BestW = Weighted[i];
 					Winner = i;
 				}
 			}
 
 			// Soft floor: if nothing is open, leave all zero (mouth shut).
-			if (Best < 0.06f)
+			if (BestW < 0.05f)
 			{
 				Timeline[Jaw][f] = 0.0f;
 				Timeline[Wide][f] = 0.0f;
 				Timeline[Pucker][f] = 0.0f;
 				Timeline[Funnel][f] = 0.0f;
+				PrevWinner = -1;
 				continue;
 			}
 
-			// Punch winner so A/I/U/O travel further on VRM faces.
-			const float Punch = FMath::Clamp(FMath::Pow(Best, 0.68f) * 1.22f, 0.0f, 1.0f);
+			// Hysteresis: keep previous vowel unless a new one clearly wins.
+			if (PrevWinner >= 0 && PrevWinner != Winner)
+			{
+				if (Weighted[PrevWinner] > BestW * 0.78f)
+				{
+					Winner = PrevWinner;
+					BestW = Weighted[PrevWinner];
+				}
+			}
+			PrevWinner = Winner;
+
+			// Punch winner so A/I/U/O travel further; Mouth Strength multiplies after.
+			const float Raw = Vals[Winner];
+			const float Punch = FMath::Clamp(FMath::Pow(FMath::Max(Raw, BestW * 0.85f), 0.55f) * 1.38f, 0.0f, 1.0f);
 			Timeline[Jaw][f]    = (Winner == 0) ? Punch : 0.0f;
 			Timeline[Wide][f]   = (Winner == 1) ? Punch : 0.0f;
 			Timeline[Pucker][f] = (Winner == 2) ? Punch : 0.0f;

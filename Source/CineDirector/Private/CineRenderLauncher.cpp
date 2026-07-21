@@ -18,6 +18,7 @@
 #include "MoviePipelinePrimaryConfig.h"
 #include "MoviePipelineQueue.h"
 #include "MoviePipelineQueueSubsystem.h"
+#include "MoviePipelineWaveOutput.h"
 
 #define LOCTEXT_NAMESPACE "CineDirector"
 
@@ -149,28 +150,46 @@ bool FCineRenderLauncher::StartRender(const FCineRenderOptions& Options, FText& 
 
 		// Point the project's CLI-encoder settings at ffmpeg (persisted so the
 		// stock Movie Render Queue UI benefits too).
+		//
+		// Force yuv420p + High profile + faststart. Default libx264 from PNG often
+		// picks yuv444p / "High 4:4:4 Predictive", which Windows players and many
+		// browsers refuse to open ("file not supported") even though the file is valid.
 		UMoviePipelineCommandLineEncoderSettings* EncoderSettings = GetMutableDefault<UMoviePipelineCommandLineEncoderSettings>();
 		EncoderSettings->ExecutablePath = FFmpegPath;
-		if (EncoderSettings->VideoCodec.IsEmpty())
+		EncoderSettings->VideoCodec = TEXT("libx264");
+		EncoderSettings->AudioCodec = TEXT("aac");
+		EncoderSettings->OutputFileExtension = TEXT("mp4");
+		// {Quality} is injected after -vcodec, so pixel format / profile / audio
+		// bitrate belong here. -shortest keeps A/V lengths aligned when the wav
+		// and frame sequence differ by a few samples.
+		const FString Compat =
+			TEXT(" -pix_fmt yuv420p -profile:v high -level 4.2 -movflags +faststart -b:a 192k -shortest");
+		EncoderSettings->EncodeSettings_Low = TEXT("-crf 28") + Compat;
+		EncoderSettings->EncodeSettings_Med = TEXT("-crf 23") + Compat;
+		EncoderSettings->EncodeSettings_High = TEXT("-crf 20") + Compat;
+		EncoderSettings->EncodeSettings_Epic = TEXT("-crf 16") + Compat;
+		// Keep the default command template, but make sure {Quality} is present.
+		if (!EncoderSettings->CommandLineFormat.Contains(TEXT("{Quality}")))
 		{
-			EncoderSettings->VideoCodec = TEXT("libx264");
-		}
-		if (EncoderSettings->AudioCodec.IsEmpty())
-		{
-			EncoderSettings->AudioCodec = TEXT("aac");
-		}
-		if (EncoderSettings->OutputFileExtension.IsEmpty())
-		{
-			EncoderSettings->OutputFileExtension = TEXT("mp4");
+			EncoderSettings->CommandLineFormat =
+				TEXT("-hide_banner -y -loglevel error {AdditionalLocalArgs} {VideoInputs} {AudioInputs} ")
+				TEXT("-acodec {AudioCodec} -vcodec {VideoCodec} {Quality} \"{OutputPath}\"");
 		}
 		EncoderSettings->TryUpdateDefaultConfigFile();
 
-		// The encoder consumes a rendered image sequence and deletes it afterwards.
+		// PNG frames for video + .wav from Sequencer audio. The CLI encoder
+		// looks for the "Audio" render pass and muxes it with AAC; without Wave
+		// Output, ffmpeg only ever sees images → silent MP4s.
 		Config->FindOrAddSettingByClass(UMoviePipelineImageSequenceOutput_PNG::StaticClass());
+		Config->FindOrAddSettingByClass(UMoviePipelineWaveOutput::StaticClass());
 		UMoviePipelineCommandLineEncoder* Encoder =
 			Cast<UMoviePipelineCommandLineEncoder>(Config->FindOrAddSettingByClass(UMoviePipelineCommandLineEncoder::StaticClass()));
 		Encoder->Quality = static_cast<EMoviePipelineEncodeQuality>(FMath::Clamp(Options.EncodeQuality, 0, 3));
+		// Delete PNGs + wav after a successful mux so the folder only keeps the MP4.
 		Encoder->bDeleteSourceFiles = true;
+		UE_LOG(LogCineDirectorRender, Log,
+			TEXT("MP4 encode: ffmpeg=%s quality=%d (yuv420p High + Sequencer audio → AAC)"),
+			*FFmpegPath, Options.EncodeQuality);
 		break;
 	}
 	case FCineRenderOptions::EFormat::PNG:

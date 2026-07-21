@@ -10,12 +10,14 @@
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Editor.h"
 #include "Engine/Brush.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/SkyLight.h"
 #include "EngineUtils.h"
 #include "GameFramework/WorldSettings.h"
@@ -25,6 +27,7 @@
 #include "MovieScene.h"
 #include "MovieSceneObjectBindingID.h"
 #include "MovieScenePossessable.h"
+#include "ReferenceSkeleton.h"
 #include "ScopedTransaction.h"
 #include "Sections/MovieScene3DTransformSection.h"
 #include "Sections/MovieSceneCameraCutSection.h"
@@ -41,10 +44,233 @@ DEFINE_LOG_CATEGORY_STATIC(LogCineDirector, Log, All);
 
 namespace CineDirectorExec
 {
-	FVector ActorCenter(const AActor* Actor)
+	/**
+	 * Best head/face bone world location on a skeletal actor (VRM/MMD/Mixamo/UE).
+	 * Returns false for props / meshes without a recognizable head.
+	 */
+	bool FindHeadWorldLocation(const AActor* Actor, FVector& OutHead)
 	{
+		if (!Actor)
+		{
+			return false;
+		}
+
+		static const FName PreferredBones[] = {
+			FName(TEXT("head")),
+			FName(TEXT("Head")),
+			FName(TEXT("HEAD")),
+			FName(TEXT("Head_M")),
+			FName(TEXT("head_M")),
+			FName(TEXT("mixamorig:Head")),
+			FName(TEXT("mixamorig_Head")),
+			FName(TEXT("Bip001-Head")),
+			FName(TEXT("Bip001 Head")),
+			FName(TEXT("Bip01 Head")),
+			FName(TEXT("bone_head")),
+			FName(TEXT("J_Head")),
+			FName(TEXT("Face")),
+			FName(TEXT("face")),
+		};
+
+		TArray<USkeletalMeshComponent*> Meshes;
+		Actor->GetComponents<USkeletalMeshComponent>(Meshes);
+		for (USkeletalMeshComponent* Skel : Meshes)
+		{
+			if (!Skel || !Skel->GetSkeletalMeshAsset())
+			{
+				continue;
+			}
+
+			for (const FName& Bone : PreferredBones)
+			{
+				if (Skel->GetBoneIndex(Bone) != INDEX_NONE)
+				{
+					OutHead = Skel->GetBoneLocation(Bone);
+					// Head bone is often at the jaw/base — nudge toward eyes.
+					OutHead.Z += 6.0;
+					return true;
+				}
+			}
+
+			// Fuzzy fallback: first bone whose name contains "head" (not ends/nubs).
+			const FReferenceSkeleton& RefSkel = Skel->GetSkeletalMeshAsset()->GetRefSkeleton();
+			const int32 NumBones = RefSkel.GetNum();
+			int32 BestIdx = INDEX_NONE;
+			int32 BestScore = -1;
+			for (int32 i = 0; i < NumBones; ++i)
+			{
+				const FString Name = RefSkel.GetBoneName(i).ToString().ToLower();
+				if (!Name.Contains(TEXT("head")))
+				{
+					continue;
+				}
+				if (Name.Contains(TEXT("end")) || Name.Contains(TEXT("nub")) || Name.Contains(TEXT("twist"))
+					|| Name.Contains(TEXT("top")) || Name.Contains(TEXT("leaf")))
+				{
+					continue;
+				}
+				// Prefer short exact-ish names ("head") over long chains.
+				const int32 Score = 100 - Name.Len() + (Name == TEXT("head") ? 50 : 0);
+				if (Score > BestScore)
+				{
+					BestScore = Score;
+					BestIdx = i;
+				}
+			}
+			if (BestIdx != INDEX_NONE)
+			{
+				OutHead = Skel->GetBoneLocation(RefSkel.GetBoneName(BestIdx));
+				OutHead.Z += 6.0;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Bounds center (full body). Used for wides / props. */
+	FVector ActorBodyCenter(const AActor* Actor)
+	{
+		if (!Actor)
+		{
+			return FVector::ZeroVector;
+		}
 		const FBox Bounds = Actor->GetComponentsBoundingBox(true);
 		return Bounds.IsValid ? Bounds.GetCenter() : Actor->GetActorLocation();
+	}
+
+	/** Point on the actor's vertical bounds: 0 = feet, 1 = top of mesh. */
+	FVector BoundsHeightPoint(const AActor* Actor, double Height01)
+	{
+		if (!Actor)
+		{
+			return FVector::ZeroVector;
+		}
+		const FBox Bounds = Actor->GetComponentsBoundingBox(true);
+		if (!Bounds.IsValid)
+		{
+			return Actor->GetActorLocation();
+		}
+		const FVector C = Bounds.GetCenter();
+		return FVector(C.X, C.Y, FMath::Lerp(Bounds.Min.Z, Bounds.Max.Z, (float)Height01));
+	}
+
+	/**
+	 * Shot size that actually drives framing. Zoom-in / focus-on without an
+	 * explicit size still want the face, not the belly of the bounds.
+	 */
+	ECineShotSize EffectiveShotSize(const FCineShotSegment& Seg)
+	{
+		if (Seg.ShotSize != ECineShotSize::Unspecified)
+		{
+			return Seg.ShotSize;
+		}
+		if (Seg.Move == ECineMoveType::ZoomIn)
+		{
+			return ECineShotSize::MediumCloseUp;
+		}
+		if (Seg.bTrackFocus)
+		{
+			return ECineShotSize::MediumCloseUp;
+		}
+		return ECineShotSize::Unspecified;
+	}
+
+	/**
+	 * Interest point + framing radius for a subject.
+	 * Tight shots / characters with a head bone aim at the face; wides stay body-centered.
+	 */
+	struct FSubjectFraming
+	{
+		FVector Point = FVector::ZeroVector;
+		double Radius = 100.0;
+		bool bHead = false;
+	};
+
+	FSubjectFraming ResolveSubjectFraming(const AActor* Actor, ECineShotSize Size)
+	{
+		FSubjectFraming Out;
+		if (!Actor)
+		{
+			return Out;
+		}
+
+		const FBox Bounds = Actor->GetComponentsBoundingBox(true);
+		const FVector BodyCenter = Bounds.IsValid ? Bounds.GetCenter() : Actor->GetActorLocation();
+		const double BodyRadius = Bounds.IsValid
+			? FMath::Max<double>(Bounds.GetExtent().Size(), 25.0)
+			: 100.0;
+
+		FVector HeadLoc = BodyCenter;
+		const bool bHasHead = FindHeadWorldLocation(Actor, HeadLoc);
+		Out.bHead = bHasHead;
+
+		switch (Size)
+		{
+		case ECineShotSize::ExtremeCloseUp:
+			Out.Point = bHasHead ? HeadLoc : BoundsHeightPoint(Actor, 0.93);
+			// Face-scale radius so CU distance isn't "full body * 1.6".
+			Out.Radius = bHasHead
+				? FMath::Clamp(BodyRadius * 0.14, 10.0, 28.0)
+				: BodyRadius * 0.18;
+			break;
+
+		case ECineShotSize::CloseUp:
+			Out.Point = bHasHead ? HeadLoc : BoundsHeightPoint(Actor, 0.90);
+			Out.Radius = bHasHead
+				? FMath::Clamp(BodyRadius * 0.18, 12.0, 36.0)
+				: BodyRadius * 0.22;
+			break;
+
+		case ECineShotSize::MediumCloseUp:
+			// Chest-up: head, slightly lower so shoulders read.
+			if (bHasHead)
+			{
+				Out.Point = HeadLoc;
+				Out.Point.Z -= FMath::Clamp(BodyRadius * 0.06, 8.0, 22.0);
+			}
+			else
+			{
+				Out.Point = BoundsHeightPoint(Actor, 0.80);
+			}
+			Out.Radius = BodyRadius * 0.38;
+			break;
+
+		case ECineShotSize::Medium:
+			Out.Point = bHasHead
+				? FMath::Lerp(BodyCenter, HeadLoc, 0.55)
+				: BoundsHeightPoint(Actor, 0.62);
+			Out.Radius = BodyRadius * 0.72;
+			break;
+
+		case ECineShotSize::Unspecified:
+			// Default "from front" on a character: upper body / face, not pelvis.
+			if (bHasHead)
+			{
+				Out.Point = FMath::Lerp(BodyCenter, HeadLoc, 0.70);
+				Out.Radius = BodyRadius * 0.85;
+			}
+			else
+			{
+				Out.Point = BodyCenter;
+				Out.Radius = BodyRadius;
+			}
+			break;
+
+		case ECineShotSize::Wide:
+		case ECineShotSize::ExtremeWide:
+		default:
+			Out.Point = BodyCenter;
+			Out.Radius = BodyRadius;
+			break;
+		}
+
+		return Out;
+	}
+
+	/** Back-compat helper used by rack-focus distance keys. */
+	FVector ActorCenter(const AActor* Actor, ECineShotSize Size = ECineShotSize::Unspecified)
+	{
+		return ResolveSubjectFraming(Actor, Size).Point;
 	}
 
 	/** Where the camera lives relative to the subject, before the move is applied. */
@@ -63,14 +289,14 @@ namespace CineDirectorExec
 		FVector AimPoint = FVector::ZeroVector;
 	};
 
-	/** Camera distance as a multiple of the subject's bounds radius. */
+	/** Camera distance as a multiple of the subject's framing radius. */
 	double FramingFactor(ECineShotSize Size)
 	{
 		switch (Size)
 		{
-		case ECineShotSize::ExtremeCloseUp: return 1.6;
-		case ECineShotSize::CloseUp:        return 2.4;
-		case ECineShotSize::MediumCloseUp:  return 3.2;
+		case ECineShotSize::ExtremeCloseUp: return 2.2;
+		case ECineShotSize::CloseUp:        return 2.8;
+		case ECineShotSize::MediumCloseUp:  return 3.4;
 		case ECineShotSize::Medium:         return 4.5;
 		case ECineShotSize::Wide:           return 8.0;
 		case ECineShotSize::ExtremeWide:    return 15.0;
@@ -89,13 +315,14 @@ namespace CineDirectorExec
 	FShotGeometry ComputeGeometry(const FCineShotSegment& Seg, const FVector& ViewLoc, const FRotator& ViewRot)
 	{
 		FShotGeometry Geo;
+		const ECineShotSize Size = EffectiveShotSize(Seg);
 
 		if (AActor* Target = Seg.TargetActor.Get())
 		{
-			const FBox Bounds = Target->GetComponentsBoundingBox(true);
+			const FSubjectFraming Frame = ResolveSubjectFraming(Target, Size);
 			Geo.bHasTarget = true;
-			Geo.TargetPoint = Bounds.IsValid ? Bounds.GetCenter() : Target->GetActorLocation();
-			Geo.Radius = Bounds.IsValid ? FMath::Max<double>(Bounds.GetExtent().Size(), 25.0) : 100.0;
+			Geo.TargetPoint = Frame.Point;
+			Geo.Radius = Frame.Radius;
 
 			// Two frames of reference for sides:
 			//  - Possessive ("its left") uses the actor's own root rotation — right
@@ -138,7 +365,7 @@ namespace CineDirectorExec
 
 			// A longer lens needs to sit further back to hold the same framing.
 			const double LensScale = Seg.FocalLengthMm > 0.0f ? Seg.FocalLengthMm / 35.0 : 1.0;
-			Geo.Distance = FMath::Max(Geo.Radius * FramingFactor(Seg.ShotSize) * LensScale, 60.0);
+			Geo.Distance = FMath::Max(Geo.Radius * FramingFactor(Size) * LensScale, 40.0);
 
 			if (Seg.ViewSide == ECineViewSide::OverShoulder)
 			{
@@ -161,7 +388,8 @@ namespace CineDirectorExec
 		Geo.AimPoint = Geo.TargetPoint;
 		if (AActor* LookAt = Seg.LookAtActor.Get())
 		{
-			Geo.AimPoint = ActorCenter(LookAt);
+			// Aim at the look-at actor with the same framing intent (face on CU, etc.).
+			Geo.AimPoint = ResolveSubjectFraming(LookAt, Size).Point;
 			Geo.bHasLookAt = true;
 		}
 
@@ -172,18 +400,21 @@ namespace CineDirectorExec
 	 * Geometry for a continuous take: the camera stays where the previous move
 	 * left it, and the spherical frame (azimuth/elevation/distance) is derived
 	 * from that offset so the next move continues seamlessly. Framing and
-	 * view-side words only position the very first move of a take.
+	 * view-side words only position the very first move of a take — but the
+	 * aim/interest point still updates to the head on close-ups so push-ins
+	 * land on the face, not the torso.
 	 */
 	FShotGeometry ComputeGeometryChained(const FCineShotSegment& Seg, const FVector& PrevPos, const FRotator& PrevRot)
 	{
 		FShotGeometry Geo;
+		const ECineShotSize Size = EffectiveShotSize(Seg);
 
 		if (AActor* Target = Seg.TargetActor.Get())
 		{
-			const FBox Bounds = Target->GetComponentsBoundingBox(true);
+			const FSubjectFraming Frame = ResolveSubjectFraming(Target, Size);
 			Geo.bHasTarget = true;
-			Geo.TargetPoint = Bounds.IsValid ? Bounds.GetCenter() : Target->GetActorLocation();
-			Geo.Radius = Bounds.IsValid ? FMath::Max<double>(Bounds.GetExtent().Size(), 25.0) : 100.0;
+			Geo.TargetPoint = Frame.Point;
+			Geo.Radius = Frame.Radius;
 		}
 		else
 		{
@@ -199,11 +430,22 @@ namespace CineDirectorExec
 		Geo.AimPoint = Geo.TargetPoint;
 		if (AActor* LookAt = Seg.LookAtActor.Get())
 		{
-			Geo.AimPoint = ActorCenter(LookAt);
+			Geo.AimPoint = ResolveSubjectFraming(LookAt, Size).Point;
 			Geo.bHasLookAt = true;
 		}
 
 		return Geo;
+	}
+
+	/** Offset from actor origin so tracking focus locks on the head/face when present. */
+	FVector TrackingFocusOffset(const AActor* Actor, ECineShotSize Size)
+	{
+		if (!Actor)
+		{
+			return FVector::ZeroVector;
+		}
+		const FVector Interest = ResolveSubjectFraming(Actor, Size).Point;
+		return Interest - Actor->GetActorLocation();
 	}
 
 	/**
@@ -1003,17 +1245,20 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 			const FShotGeometry Geo = bFirst ? FirstGeo : ComputeGeometryChained(Seg, PrevPos, PrevRot);
 
 			// Mid-take framing becomes an implicit dolly: "close up on X" travels to
-			// close-up distance instead of holding still where the last move ended.
-			if (!bFirst && Seg.Move == ECineMoveType::Static && Seg.ShotSize != ECineShotSize::Unspecified && Geo.bHasTarget)
+			// close-up (face) distance instead of holding still where the last move ended.
 			{
-				const double LensScale = Seg.FocalLengthMm > 0.0f ? Seg.FocalLengthMm / 35.0 : 1.0;
-				const double WantDist = FMath::Max(Geo.Radius * FramingFactor(Seg.ShotSize) * LensScale, 60.0);
-				const double Delta = Geo.Distance - WantDist;
-				if (FMath::Abs(Delta) > 25.0)
+				const ECineShotSize Size = EffectiveShotSize(Seg);
+				if (!bFirst && Seg.Move == ECineMoveType::Static && Size != ECineShotSize::Unspecified && Geo.bHasTarget)
 				{
-					Seg.Move = Delta > 0.0 ? ECineMoveType::DollyIn : ECineMoveType::DollyOut;
-					Seg.MoveAmount = FMath::Abs(Delta);
-					Seg.ParseNotes.Remove(TEXT("No camera move recognized — using a static shot."));
+					const double LensScale = Seg.FocalLengthMm > 0.0f ? Seg.FocalLengthMm / 35.0 : 1.0;
+					const double WantDist = FMath::Max(Geo.Radius * FramingFactor(Size) * LensScale, 40.0);
+					const double Delta = Geo.Distance - WantDist;
+					if (FMath::Abs(Delta) > 25.0)
+					{
+						Seg.Move = Delta > 0.0 ? ECineMoveType::DollyIn : ECineMoveType::DollyOut;
+						Seg.MoveAmount = FMath::Abs(Delta);
+						Seg.ParseNotes.Remove(TEXT("No camera move recognized — using a static shot."));
+					}
 				}
 			}
 
@@ -1051,17 +1296,20 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 			}
 
 			// Focus: rack focus becomes manual-distance keys; otherwise the first
-			// tracking request wins for the whole take.
+			// tracking request wins for the whole take (offset to head when present).
 			if (Seg.RackFocusToActor.IsValid() && Seg.TargetActor.IsValid() && !bTrackingFocusSet)
 			{
-				FocusKeys.Emplace(SegStart, (float)FVector::Dist(SegStartPos, ActorCenter(Seg.TargetActor.Get())));
-				FocusKeys.Emplace(SegEnd, (float)FVector::Dist(SegEndPos, ActorCenter(Seg.RackFocusToActor.Get())));
+				const ECineShotSize Size = EffectiveShotSize(Seg);
+				FocusKeys.Emplace(SegStart, (float)FVector::Dist(SegStartPos, ActorCenter(Seg.TargetActor.Get(), Size)));
+				FocusKeys.Emplace(SegEnd, (float)FVector::Dist(SegEndPos, ActorCenter(Seg.RackFocusToActor.Get(), Size)));
 			}
 			else if (Seg.bTrackFocus && (Seg.LookAtActor.IsValid() || Seg.TargetActor.IsValid()) && !bTrackingFocusSet && FocusKeys.Num() == 0)
 			{
+				AActor* FocusActor = Seg.LookAtActor.IsValid() ? Seg.LookAtActor.Get() : Seg.TargetActor.Get();
 				Lens->FocusSettings.FocusMethod = ECameraFocusMethod::Tracking;
-				Lens->FocusSettings.TrackingFocusSettings.ActorToTrack =
-					Seg.LookAtActor.IsValid() ? Seg.LookAtActor.Get() : Seg.TargetActor.Get();
+				Lens->FocusSettings.TrackingFocusSettings.ActorToTrack = FocusActor;
+				Lens->FocusSettings.TrackingFocusSettings.RelativeOffset =
+					TrackingFocusOffset(FocusActor, EffectiveShotSize(Seg));
 				bTrackingFocusSet = true;
 			}
 
@@ -1108,7 +1356,7 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 		else if (!bTrackingFocusSet && FirstGeo.bHasTarget)
 		{
 			Lens->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
-			Lens->FocusSettings.ManualFocusDistance = FVector::Dist(StartPos, FirstGeo.TargetPoint);
+			Lens->FocusSettings.ManualFocusDistance = FVector::Dist(StartPos, FirstGeo.AimPoint);
 		}
 
 		FPostProcessSettings& PP = Lens->PostProcessSettings;
@@ -1255,14 +1503,16 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 		}
 		else if (Seg.bTrackFocus && (Seg.LookAtActor.IsValid() || Seg.TargetActor.IsValid()))
 		{
+			AActor* FocusActor = Seg.LookAtActor.IsValid() ? Seg.LookAtActor.Get() : Seg.TargetActor.Get();
 			Lens->FocusSettings.FocusMethod = ECameraFocusMethod::Tracking;
-			Lens->FocusSettings.TrackingFocusSettings.ActorToTrack =
-				Seg.LookAtActor.IsValid() ? Seg.LookAtActor.Get() : Seg.TargetActor.Get();
+			Lens->FocusSettings.TrackingFocusSettings.ActorToTrack = FocusActor;
+			Lens->FocusSettings.TrackingFocusSettings.RelativeOffset =
+				TrackingFocusOffset(FocusActor, EffectiveShotSize(Seg));
 		}
 		else if (Geo.bHasTarget)
 		{
 			Lens->FocusSettings.FocusMethod = ECameraFocusMethod::Manual;
-			Lens->FocusSettings.ManualFocusDistance = FVector::Dist(StartPos, Geo.TargetPoint);
+			Lens->FocusSettings.ManualFocusDistance = FVector::Dist(StartPos, Geo.AimPoint);
 		}
 
 		const FGuid CamGuid = MovieScene->AddPossessable(Label, Camera->GetClass());
@@ -1332,8 +1582,9 @@ FCineExecuteResult FShotPlanExecutor::Execute(const FCineShotPlan& Plan)
 
 		if (bRackFocus)
 		{
-			const FVector FromPoint = ActorCenter(Seg.TargetActor.Get());
-			const FVector ToPoint = ActorCenter(Seg.RackFocusToActor.Get());
+			const ECineShotSize Size = EffectiveShotSize(Seg);
+			const FVector FromPoint = ActorCenter(Seg.TargetActor.Get(), Size);
+			const FVector ToPoint = ActorCenter(Seg.RackFocusToActor.Get(), Size);
 			AddLensFloatTrack(TEXT("ManualFocusDistance"), TEXT("FocusSettings.ManualFocusDistance"),
 				(float)FVector::Dist(StartPos, FromPoint), (float)FVector::Dist(EndPos, ToPoint));
 		}
