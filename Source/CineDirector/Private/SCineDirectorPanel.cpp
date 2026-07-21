@@ -12,6 +12,7 @@
 #include "ShotGrammarParser.h"
 #include "ShotPlanExecutor.h"
 #include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -270,10 +271,12 @@ TSharedRef<SWidget> SCineDirectorPanel::BuildRenderSection()
 				[
 					SAssignNew(TrailerCheck, SCheckBox)
 					.ToolTipText(LOCTEXT("TrailerCheckTooltip",
-						"After the render finishes, automatically cut it into a found-footage trailer: four beats with handheld shake, flicker, REC + timecode overlays, letterspaced title cards, and a synthesized drone + whistle score. Forces the MP4 format."))
+						"After the MP4 render finishes, cut it into a trailer using the Style box below "
+						"(beats, grade, grain/scanlines, title cards, score). Forces MP4. "
+						"Found-footage is only applied if you write it in Style — not automatic."))
 					[
 						SNew(STextBlock)
-						.Text(LOCTEXT("TrailerCheck", "Cut a found-footage trailer after rendering (forces MP4)"))
+						.Text(LOCTEXT("TrailerCheck", "Cut a trailer after rendering (uses Style below, forces MP4)"))
 					]
 				]
 
@@ -284,11 +287,49 @@ TSharedRef<SWidget> SCineDirectorPanel::BuildRenderSection()
 				+ SVerticalBox::Slot().AutoHeight()
 				[
 					SAssignNew(TrailerStyleBox, SEditableTextBox)
-					.Text(FText::FromString(TEXT("found footage, security cam, natural colors, eerie music")))
-					.ToolTipText(LOCTEXT("TrailerStyleTooltip",
-						"Plain language. Look: found footage / cinematic letterbox / black and white / green / warm / cold / natural. "
-						"Texture: handheld, flicker, grainy, no grain. Pacing: fast cuts or slow burn. "
-						"Music: eerie / tense heartbeat / somber / no music / drone only. Titles: bold title."))
+					// Neutral / music-video friendly default — NOT found-footage.
+					.Text(FText::FromString(TEXT("music video, scanlines, film grain")))
+					.HintText(LOCTEXT("TrailerStyleHint",
+						"e.g. music video, scanlines, film grain, hard cuts  |  horror, cold, vignette, slow burn"))
+					.ToolTipText(FText::FromString(FCineTrailerProcessor::GetStyleVocabulary()))
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(FCineTrailerProcessor::GetStyleVocabulary()))
+					.AutoWrapText(true)
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+				]
+
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 2.0f)
+				[
+					SNew(STextBlock).Text(LOCTEXT("TrailerAudioLabel", "Trailer audio")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+				[
+					SAssignNew(TrailerKeepAudioCheck, SCheckBox)
+					.IsChecked(ECheckBoxState::Checked)
+					.ToolTipText(LOCTEXT("TrailerKeepAudioTip",
+						"Preserve the audio from your Movie Render Queue MP4 (dialogue, music, SFX), "
+						"cut to match the trailer beats. Leave this on for music videos."))
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("TrailerKeepAudio", "Keep audio from render"))
+					]
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+				[
+					SAssignNew(TrailerScoreCheck, SCheckBox)
+					.IsChecked(ECheckBoxState::Unchecked)
+					.ToolTipText(LOCTEXT("TrailerScoreTip",
+						"Layer CineDirector's synthetic trailer score (drone / pulse / upbeat bed). "
+						"Off by default so it does not replace your render audio. "
+						"Enable both to mix the score under the original track."))
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("TrailerScore", "Add synthetic trailer score"))
+					]
 				]
 
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 2.0f)
@@ -379,6 +420,8 @@ FReply SCineDirectorPanel::OnStartRender()
 		TrailerCardsBox->GetText().ToString().ParseIntoArrayLines(TrailerOptions.CardLines);
 	}
 	TrailerOptions.CameraTag = TrailerCamBox.IsValid() ? TrailerCamBox->GetText().ToString() : TEXT("SAFEHOUSE CAM 03");
+	TrailerOptions.bKeepSourceAudio = !TrailerKeepAudioCheck.IsValid() || TrailerKeepAudioCheck->IsChecked();
+	TrailerOptions.bAddSyntheticScore = TrailerScoreCheck.IsValid() && TrailerScoreCheck->IsChecked();
 	const FDateTime RenderStartUtc = FDateTime::UtcNow();
 
 	TWeakPtr<SCineDirectorPanel> WeakSelf = SharedThis(this);

@@ -63,23 +63,29 @@ cuts it into a finished trailer: beats sliced from the footage, letterspaced tit
 cards between them, a big title reveal, "COMING SOON", and a fully synthesized
 score — no external assets needed.
 
-The edit is described in plain language, same as shots. The **Style** box accepts
-descriptions like:
+The edit is described in plain language. The **Style** box alone drives the look
+(the checkbox only enables trailer mode — it does **not** force found-footage).
+Audio is separate (keep render audio / synthetic score toggles).
 
-> found footage, security cam, natural colors, eerie music
+Examples:
 
-and maps them onto a concrete treatment:
+> music video, scanlines, film grain, hard cuts, zoom in  
+> horror, cold, vignette, heavy grain, slow burn, dutch  
+> found footage, security cam, natural colors
 
-| You write... | You get |
+The parser understands **kits**, **grades**, **camera effects**, **texture**,
+**transitions**, and **pacing**. Full vocabulary is listed under the Style box in
+the panel (and in `FCineTrailerProcessor::GetStyleVocabulary()`). Highlights:
+
+| Category | Examples |
 | --- | --- |
-| `found footage` / `security cam` / `cctv` / `vhs` / `bodycam` | handheld shake, exposure flicker, chroma fringing, blinking REC + camera tag + running timecode |
-| `handheld` / `shaky` | shake without the camera overlays |
-| `cinematic` / `letterbox` | cinemascope bars (neutral grade unless a color is named) |
-| `black and white` / `noir`, `green` / `alien` / `sickly`, `warm` / `sepia`, `cold` / `icy`, `natural` / `no grade` | color grade (default: the footage's own colors) |
-| `grainy` / `heavy grain` / `no grain` / `crisp` | film grain level |
-| `fast cuts` / `frantic` vs. `slow` | escalating short beats vs. long beats |
-| `eerie`, `tense` / `heartbeat`, `somber`, `no music`, `drone only` | the synthesized score's mood (drone bed + an original 4-note whistle motif) |
-| `bold title` / `blockbuster` | heavy bold title instead of the letterspaced serif |
+| Kits | `music video`, `found footage` / `cctv`, `horror`, `action`, `thriller`, `romance`, `documentary`, `fashion`, `vaporwave`, `cyberpunk`, `anime op`, `commercial` |
+| Frame | `letterbox` / `cinematic`, `dutch`, `zoom in` / `push in`, `mirror`, `handheld` / `chaotic cam` |
+| Grade | `b&w` / `noir`, `warm` / `sepia`, `cold`, `teal and orange`, `neon`, `bleach bypass`, `vintage` / `80s`, `high contrast`, `desaturated`, `overexposed`, `natural` |
+| Texture | `film grain` / `grainy` / `16mm`, `scanlines` / `crt` / `vhs`, `flicker`, `chromatic`, `glitch`, `pixelate`, `vignette`, `bloom`, `soft` / `dreamy`, `sharpen` |
+| Pacing | `fast cuts` / `montage` / `smash cuts`, `slow burn`, `hard cuts`, `soft fades` |
+| Titles | `bold title` / `blockbuster` |
+| Score mood* | `eerie`, `tense` / `heartbeat`, `somber`, `upbeat`, `drone only` (*only if synthetic score is checked) |
 
 The parsed interpretation is logged (`LogCineDirectorTrailer`) so you can confirm
 how the description was understood. Anything unmentioned gets a sensible default.

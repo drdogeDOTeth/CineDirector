@@ -61,6 +61,8 @@ private:
 
 	TSharedPtr<SCheckBox> TrailerCheck;
 	TSharedPtr<SEditableTextBox> TrailerStyleBox;
+	TSharedPtr<SCheckBox> TrailerKeepAudioCheck;
+	TSharedPtr<SCheckBox> TrailerScoreCheck;
 	TSharedPtr<SEditableTextBox> TrailerTitleBox;
 	TSharedPtr<SMultiLineEditableTextBox> TrailerCardsBox;
 	TSharedPtr<SEditableTextBox> TrailerCamBox;
