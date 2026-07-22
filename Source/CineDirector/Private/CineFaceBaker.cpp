@@ -373,6 +373,36 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		PrevPose = NextPose;
 	}
 
+	// ARKit morphs are authored so 1.0 = extreme travel. Emotion poses were
+	// tuned for softer VRM full-face morphs — ease brows/mouth micro-slots on
+	// layered faces so lips and brows don't rubber-band.
+	if (Request.Profile.bLayeredBlendshapes)
+	{
+		const ECineFaceSlot SoftSlots[] = {
+			ECineFaceSlot::BrowUp, ECineFaceSlot::BrowDown, ECineFaceSlot::BrowSad,
+			ECineFaceSlot::MouthSmile, ECineFaceSlot::MouthFrown, ECineFaceSlot::MouthPress,
+			ECineFaceSlot::NoseSneer, ECineFaceSlot::EyeWide, ECineFaceSlot::EyeSquint,
+		};
+		for (ECineFaceSlot S : SoftSlots)
+		{
+			for (float& V : Timeline[(int32)S])
+			{
+				V = FMath::Clamp(V * 0.70f, 0.0f, 1.0f);
+			}
+		}
+		const ECineFaceSlot ExprSlotsSoft[] = {
+			ECineFaceSlot::ExprHappy, ECineFaceSlot::ExprAngry,
+			ECineFaceSlot::ExprSad, ECineFaceSlot::ExprSurprised,
+		};
+		for (ECineFaceSlot S : ExprSlotsSoft)
+		{
+			for (float& V : Timeline[(int32)S])
+			{
+				V = FMath::Clamp(V * 0.30f, 0.0f, 1.0f);
+			}
+		}
+	}
+
 	// Peak of expression slots for diagnostics.
 	float PeakExpr = 0.0f;
 	const ECineFaceSlot PeakSlots[] = {
@@ -504,8 +534,14 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	}
 
 	// Final mouth strength scale (panel slider). 0 = no mouth motion, 1 = as analyzed, 2 = double.
+	// Layered ARKit faces get a mild built-in ease so default slider values don't
+	// max every morph (void FBX morphs travel hard at 1.0).
 	{
-		const float MouthMul = FMath::Clamp(Request.MouthStrength, 0.0f, 2.5f);
+		float MouthMul = FMath::Clamp(Request.MouthStrength, 0.0f, 2.5f);
+		if (Request.Profile.bLayeredBlendshapes)
+		{
+			MouthMul *= 0.85f;
+		}
 		const ECineFaceSlot MouthSlots[] = {
 			ECineFaceSlot::JawOpen, ECineFaceSlot::MouthWide,
 			ECineFaceSlot::MouthPucker, ECineFaceSlot::MouthFunnel,
@@ -635,6 +671,7 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	// mouths hide them again. Derived from the final mouth channels so Mouth
 	// Strength and Articulation carry through, and mapped only on rigs that
 	// have the morphs (ARKit mouthUpperUp/LowerDown, MetaHuman lip raise/depress).
+	// Layered void FBX morphs travel hard — slightly lower caps there.
 	{
 		const int32 Jaw = (int32)ECineFaceSlot::JawOpen;
 		const int32 Wide = (int32)ECineFaceSlot::MouthWide;
@@ -643,12 +680,14 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		const int32 Close = (int32)ECineFaceSlot::MouthClose;
 		const int32 Upper = (int32)ECineFaceSlot::MouthUpperUp;
 		const int32 Lower = (int32)ECineFaceSlot::MouthLowerDown;
+		const float UpperCap = Request.Profile.bLayeredBlendshapes ? 0.45f : 0.65f;
+		const float LowerCap = Request.Profile.bLayeredBlendshapes ? 0.50f : 0.75f;
 		for (int32 f = 0; f < NumFrames; ++f)
 		{
 			const float Round = FMath::Max(Timeline[Pucker][f], Timeline[Funnel][f]);
 			const float Show = FMath::Clamp(1.0f - Round * 0.8f - Timeline[Close][f], 0.0f, 1.0f);
-			const float UpperV = FMath::Clamp((Timeline[Jaw][f] * 0.30f + Timeline[Wide][f] * 0.35f) * Show, 0.0f, 0.65f);
-			const float LowerV = FMath::Clamp((Timeline[Jaw][f] * 0.40f + Timeline[Wide][f] * 0.40f) * Show, 0.0f, 0.75f);
+			const float UpperV = FMath::Clamp((Timeline[Jaw][f] * 0.30f + Timeline[Wide][f] * 0.35f) * Show, 0.0f, UpperCap);
+			const float LowerV = FMath::Clamp((Timeline[Jaw][f] * 0.40f + Timeline[Wide][f] * 0.40f) * Show, 0.0f, LowerCap);
 			Timeline[Upper][f] = FMath::Max(Timeline[Upper][f], UpperV);
 			Timeline[Lower][f] = FMath::Max(Timeline[Lower][f], LowerV);
 		}
@@ -745,9 +784,10 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	Package->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(Anim);
 
-	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Baked '%s': %d curves, %d frames (%.1fs). exclusiveVisemes=%d gaze=%d artic=%.2f"),
+	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Baked '%s': %d curves, %d frames (%.1fs). exclusiveVisemes=%d layered=%d gaze=%d artic=%.2f"),
 		*AssetName, CurvesWritten, NumFrames, (float)NumFrames / Fps,
-		Request.Profile.bExclusiveVisemes ? 1 : 0, bHasGaze ? 1 : 0, Request.Articulation);
+		Request.Profile.bExclusiveVisemes ? 1 : 0, Request.Profile.bLayeredBlendshapes ? 1 : 0,
+		bHasGaze ? 1 : 0, Request.Articulation);
 	return Anim;
 }
 

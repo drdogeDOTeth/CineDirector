@@ -124,6 +124,15 @@ CineDirector's canonical face slots (ARKit blendshapes, Oculus/Reallusion
 visemes, and MetaHuman `CTRL_expressions` controls are recognized by name;
 anything else is fuzzy-matched). Then:
 
+**Void / VRM characters — prefer the FBX for faces.** The void kits ship both
+GLB and FBX. GLBs typically keep only the small VRM set (`A/I/U/E/O`, Joy/Angry,
+blinks, look dirs). FBXs keep that set **plus** ~48 ARKit shapes (`jawOpen`,
+`mouthPucker`, smiles, brows, teeth reveal, …). CineDirector detects the rich
+ARKit set, prefers those curves over duplicate VRM vowels/full-face poses (so
+lips/brows don't double-drive and stretch), and runs layered MetaHuman-style
+lipsync. On GLB-only meshes it falls back to exclusive vowel mode and notes that
+reimporting the FBX unlocks better face detail.
+
 - **Audio-driven lipsync** — point at a dialogue file (WAV directly; MP3/OGG/
   FLAC/M4A via ffmpeg). The energy envelope drives the jaw, spectral balance
   shapes the mouth, dips become M/B/P closures. Pronunciation is built up

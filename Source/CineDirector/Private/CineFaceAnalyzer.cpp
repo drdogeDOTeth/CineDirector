@@ -176,7 +176,8 @@ namespace
 	const FNamePattern* FuzzyTable(int32& OutNum)
 	{
 		static const FNamePattern Patterns[] = {
-			// Gaze before generic "eye" patterns so LookLeft doesn't become blink
+			// Gaze before generic "eye" patterns so LookLeft doesn't become blink.
+			// Void GLB/FBX exports use accessory-prefixed names (NavyLook*, TwirlLook*, …).
 			{ TEXT("lookleft"), ECineFaceSlot::EyeLookLeft, 1.0f },
 			{ TEXT("lookright"), ECineFaceSlot::EyeLookRight, 1.0f },
 			{ TEXT("lookup"), ECineFaceSlot::EyeLookUp, 1.0f },
@@ -187,6 +188,8 @@ namespace
 			{ TEXT("eyelookdown"), ECineFaceSlot::EyeLookDown, 1.0f },
 			{ TEXT("gazeleft"), ECineFaceSlot::EyeLookLeft, 1.0f },
 			{ TEXT("gazeright"), ECineFaceSlot::EyeLookRight, 1.0f },
+			// Prefixed void look sets (Navy/Twirl/Stoned/Lime) also match *lookleft via
+			// the generic patterns above; keep explicit names for clarity in tables.
 			{ TEXT("jawopen"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("mouthopen"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("jawdrop"), ECineFaceSlot::JawOpen, 1.0f },
@@ -311,6 +314,40 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 	const FNamePattern* Fuzzy = FuzzyTable(NumFuzzy);
 	int32 Unrecognized = 0;
 	int32 VowelHits = 0; // A/I/U/E/O single-letter style
+	// ARKit-ish layered markers (void FBX ships these alongside VRM vowels).
+	int32 ArkitHits = 0;
+	auto IsArkitMarker = [](const FString& Norm) -> bool
+	{
+		static const TCHAR* Markers[] = {
+			TEXT("jawopen"), TEXT("mouthpucker"), TEXT("mouthfunnel"), TEXT("mouthclose"),
+			TEXT("mouthsmileleft"), TEXT("mouthsmileright"), TEXT("mouthstretchleft"), TEXT("mouthstretchright"),
+			TEXT("mouthupperupleft"), TEXT("mouthupperupright"), TEXT("mouthlowerdownleft"), TEXT("mouthlowerdownright"),
+			TEXT("mouthfrownleft"), TEXT("mouthfrownright"), TEXT("mouthpressleft"), TEXT("mouthpressright"),
+			TEXT("browinnerup"), TEXT("browdownleft"), TEXT("browdownright"),
+			TEXT("browouterupleft"), TEXT("browouterupright"),
+			TEXT("eyeblinkleft"), TEXT("eyeblinkright"), TEXT("eyewideleft"), TEXT("eyewideright"),
+		};
+		for (const TCHAR* M : Markers)
+		{
+			if (Norm == M)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	auto IsVrmVowelName = [](const FString& Norm) -> bool
+	{
+		return Norm.Len() == 1
+			&& (Norm[0] == 'a' || Norm[0] == 'i' || Norm[0] == 'u' || Norm[0] == 'e' || Norm[0] == 'o');
+	};
+	auto IsVrmFullFaceName = [](const FString& Norm) -> bool
+	{
+		return Norm == TEXT("joy") || Norm == TEXT("fun") || Norm == TEXT("happy")
+			|| Norm == TEXT("angry") || Norm == TEXT("anger")
+			|| Norm == TEXT("sorrow") || Norm == TEXT("sad")
+			|| Norm == TEXT("surprised") || Norm == TEXT("surprise");
+	};
 
 	for (const UMorphTarget* Morph : Morphs)
 	{
@@ -320,11 +357,15 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 		}
 		const FName MorphName = Morph->GetFName();
 		const FString Norm = NormalizeName(MorphName.ToString());
+		if (IsArkitMarker(Norm))
+		{
+			++ArkitHits;
+		}
 
 		if (const TPair<ECineFaceSlot, float>* Exact = ExactTable().Find(Norm))
 		{
 			Profile.Slots[(int32)Exact->Key].Add({ MorphName, Exact->Value });
-			if (Norm.Len() == 1 && (Norm[0] == 'a' || Norm[0] == 'i' || Norm[0] == 'u' || Norm[0] == 'e' || Norm[0] == 'o'))
+			if (IsVrmVowelName(Norm))
 			{
 				++VowelHits;
 			}
@@ -343,11 +384,49 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 		Unrecognized += bMatched ? 0 : 1;
 	}
 
-	// VRM/MMD faces use exclusive A/I/U/E/O morphs — stacking them looks wrong.
-	if (VowelHits >= 3)
+	// Dual-export void FBX: ARKit micro-shapes + VRM A/I/U/E/O + Joy/Angry.
+	// Driving both doubles jaw/lips/brows into rubber-face stretch. Prefer ARKit.
+	const bool bArkitRich = ArkitHits >= 6;
+	if (bArkitRich)
 	{
+		Profile.bLayeredBlendshapes = true;
+		Profile.bExclusiveVisemes = false;
+
+		int32 StrippedVowels = 0;
+		int32 StrippedExprs = 0;
+		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
+		{
+			TArray<FCineFaceCurveTarget>& Targets = Profile.Slots[Slot];
+			for (int32 i = Targets.Num() - 1; i >= 0; --i)
+			{
+				const FString Norm = NormalizeName(Targets[i].CurveName.ToString());
+				if (IsVrmVowelName(Norm))
+				{
+					Targets.RemoveAt(i);
+					++StrippedVowels;
+					continue;
+				}
+				// Full-face Joy/Angry already bake brows+mouth — keep micro-slots only.
+				if (IsVrmFullFaceName(Norm)
+					&& (Slot == (int32)ECineFaceSlot::ExprHappy
+						|| Slot == (int32)ECineFaceSlot::ExprAngry
+						|| Slot == (int32)ECineFaceSlot::ExprSad
+						|| Slot == (int32)ECineFaceSlot::ExprSurprised))
+				{
+					Targets.RemoveAt(i);
+					++StrippedExprs;
+				}
+			}
+		}
+		Profile.Notes.Add(FString::Printf(
+			TEXT("Layered ARKit-style face (%d markers) — preferred over VRM vowels/full-face poses so lips/brows don't double-drive. Dropped %d vowel + %d full-face morph bindings. FBX imports work best for this character."),
+			ArkitHits, StrippedVowels, StrippedExprs));
+	}
+	else if (VowelHits >= 3)
+	{
+		// Pure VRM/MMD (typical void GLB): exclusive A/I/U/E/O, no stacking.
 		Profile.bExclusiveVisemes = true;
-		Profile.Notes.Add(TEXT("VRM/MMD-style exclusive vowel morphs detected — lipsync picks one shape per frame."));
+		Profile.Notes.Add(TEXT("VRM/MMD-style exclusive vowel morphs detected — lipsync picks one shape per frame. If lips look limited, reimport the FBX of this character (fuller ARKit blendshape set)."));
 	}
 
 	Profile.Notes.Add(FString::Printf(TEXT("%d morph targets scanned, %d unrecognized."), Morphs.Num(), Unrecognized));

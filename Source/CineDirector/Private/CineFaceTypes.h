@@ -69,6 +69,14 @@ struct FCineFaceProfile
 	 */
 	bool bExclusiveVisemes = false;
 
+	/**
+	 * Mesh has a rich layered face set (ARKit-style jaw/pucker/smile/brows, etc.).
+	 * Void FBX exports often ship ARKit + VRM vowels together — when this is set,
+	 * the analyzer prefers ARKit targets and the baker eases emotion weights so
+	 * lips/brows don't stretch from double-driving.
+	 */
+	bool bLayeredBlendshapes = false;
+
 	/** Per-slot curve targets; an empty array means the slot is unmapped on this mesh. */
 	TArray<FCineFaceCurveTarget> Slots[(int32)ECineFaceSlot::Count];
 

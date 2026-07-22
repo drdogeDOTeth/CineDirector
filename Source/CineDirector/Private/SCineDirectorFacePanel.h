@@ -48,7 +48,9 @@ private:
 	TSharedPtr<STextBlock> StatusBlock;
 
 	// Tuning sliders (persisted for the editor session).
-	float MouthStrength = 1.3f;
+	// 1.0 = as analyzed; layered ARKit faces also get a mild baker ease.
+	// Bump toward 1.3–1.5 only if a VRM/GLB mouth still looks timid.
+	float MouthStrength = 1.0f;
 	/** 1.0 = full pose table; >1 pushes harder (clamped in baker). */
 	float EmotionStrength = 1.0f;
 	/** How crisply visemes hit: <1 soft/mumbly, 1 = as analyzed, >1 snappy enunciation. */
