@@ -203,8 +203,9 @@ namespace
 	/**
 	 * For VRM/MMD exclusive vowel morphs: keep only the dominant mouth shape
 	 * so A/I/U/E/O never stack into a half-open mush.
-	 * Slightly de-biases pure Jaw (A) so I/U/O can win when scores are close,
-	 * and holds the previous winner unless clearly beaten (less frame flicker).
+	 * Slightly de-biases pure Jaw (A) so I/U can win when scores are close.
+	 * O is intentionally less sticky — hysteresis + bias used to hold "oh"
+	 * across following syllables so words never fully re-shape.
 	 */
 	void ApplyExclusiveVisemes(TArray<TArray<float>>& Timeline, int32 NumFrames)
 	{
@@ -214,9 +215,11 @@ namespace
 		const int32 Funnel = (int32)ECineFaceSlot::MouthFunnel;
 		const int32 Close = (int32)ECineFaceSlot::MouthClose;
 
-		// Weight: A slightly down, I/U/O slightly up so shapes aren't drowned by open energy.
-		const float Bias[4] = { 0.90f, 1.12f, 1.14f, 1.12f };
+		// A slightly down; I/U up. O near unity so it can't out-hold A/I.
+		const float Bias[4] = { 0.92f, 1.12f, 1.14f, 1.00f };
 		int32 PrevWinner = -1;
+		// Frames we've forced-kept PrevWinner against a different raw winner.
+		int32 StickyHold = 0;
 
 		for (int32 f = 0; f < NumFrames; ++f)
 		{
@@ -228,6 +231,7 @@ namespace
 				Timeline[Pucker][f] = 0.0f;
 				Timeline[Funnel][f] = 0.0f;
 				PrevWinner = -1;
+				StickyHold = 0;
 				continue;
 			}
 
@@ -258,17 +262,34 @@ namespace
 				Timeline[Pucker][f] = 0.0f;
 				Timeline[Funnel][f] = 0.0f;
 				PrevWinner = -1;
+				StickyHold = 0;
 				continue;
 			}
 
 			// Hysteresis: keep previous vowel unless a new one clearly wins.
+			// O (index 3) is easy to leave and can only force-hold briefly —
+			// that was the main "oh stuck on the next syllables" failure mode.
 			if (PrevWinner >= 0 && PrevWinner != Winner)
 			{
-				if (Weighted[PrevWinner] > BestW * 0.78f)
+				const float HoldRatio = (PrevWinner == 3) ? 0.94f : 0.88f;
+				const int32 MaxSticky = (PrevWinner == 3) ? 2 : 5;
+				const bool bMayHold = StickyHold < MaxSticky
+					&& Weighted[PrevWinner] > BestW * HoldRatio;
+				if (bMayHold)
 				{
 					Winner = PrevWinner;
 					BestW = Weighted[PrevWinner];
+					++StickyHold;
 				}
+				else
+				{
+					StickyHold = 0;
+				}
+			}
+			else
+			{
+				// Raw winner agrees with previous — real support, not sticky hold.
+				StickyHold = 0;
 			}
 			PrevWinner = Winner;
 
@@ -393,8 +414,9 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		{
 			const float ShapeWide = FMath::Clamp((V.Wide + V.Sibilant * 0.4f) * (1.0f - V.Close), 0.0f, 1.0f);
 			const float ShapePucker = FMath::Clamp(V.Pucker * (1.0f - V.Close), 0.0f, 1.0f);
+			// Tiny U→O bleed only — larger values kept Funnel alive and stuck exclusive O.
 			const float ShapeFunnel = FMath::Clamp(
-				FMath::Max(V.Funnel, V.Pucker * 0.35f) * (1.0f - V.Close), 0.0f, 1.0f);
+				FMath::Max(V.Funnel, V.Pucker * 0.08f) * (1.0f - V.Close), 0.0f, 1.0f);
 			Timeline[(int32)ECineFaceSlot::MouthWide][Frame] =
 				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthWide][Frame] * 0.4f, ShapeWide);
 			Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] =

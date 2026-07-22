@@ -748,11 +748,24 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		// A (ah): open mid, not too bright/dark.
 		// I/E (ee/eh): high-band energy.
 		// U (oo): low-band, dark.
-		// O (oh): mid-low round.
+		// O (oh): balanced mid-low round — more selective so it doesn't own generic speech.
 		float ScoreA = FMath::Clamp(M * 2.05f + L * 0.5f - H * 0.9f + 0.10f, 0.0f, 1.0f);
 		float ScoreI = FMath::Clamp(H * 2.75f - L * 1.05f - M * 0.12f - 0.10f, 0.0f, 1.0f);
 		float ScoreU = FMath::Clamp(L * 2.95f - H * 1.4f - M * 0.28f - 0.16f, 0.0f, 1.0f);
-		float ScoreO = FMath::Clamp(M * 1.55f + L * 1.2f - H * 1.15f - 0.06f, 0.0f, 1.0f);
+		// O wants L≈M balance (round), not pure mid (A) or pure low (U).
+		float ScoreO = FMath::Clamp(
+			L * 1.15f + M * 1.20f - H * 1.40f - FMath::Abs(L - M) * 0.75f - 0.14f,
+			0.0f, 1.0f);
+		// Pure mid → A territory; very dark low → U territory.
+		if (M > L * 1.30f)
+		{
+			ScoreO *= 0.62f;
+		}
+		if (L > 0.48f && L > M * 1.15f)
+		{
+			ScoreO *= 0.55f;
+			ScoreU = FMath::Max(ScoreU, ScoreO * 1.1f);
+		}
 
 		if (Sibilance[i] > 1.15f && E > 0.08f)
 		{
@@ -761,11 +774,11 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 			ScoreI = FMath::Max(ScoreI, F.Sibilant);
 			ScoreA *= 0.28f;
 			ScoreU *= 0.25f;
-			ScoreO *= 0.28f;
+			ScoreO *= 0.22f;
 		}
 
 		// Softmax so one vowel leads without always defaulting to Jaw=energy.
-		constexpr float Sharp = 2.6f;
+		constexpr float Sharp = 2.75f;
 		float WA = FMath::Pow(FMath::Max(ScoreA, 1e-4f), Sharp);
 		float WI = FMath::Pow(FMath::Max(ScoreI, 1e-4f), Sharp);
 		float WU = FMath::Pow(FMath::Max(ScoreU, 1e-4f), Sharp);
@@ -779,13 +792,12 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		F.Pucker = ShapeAmt * (WU / WSum);
 		F.Funnel = ShapeAmt * (WO / WSum);
 
-		// Weak spectral contrast: still seed all four so exclusive mode isn't
-		// pure A open/close — lightly cycle toward O/I/U with energy.
+		// Weak spectral contrast: seed A/I/U more than O so O isn't the filler vowel.
 		const float MaxScore = FMath::Max(ScoreA, FMath::Max3(ScoreI, ScoreU, ScoreO));
 		if (MaxScore < 0.20f && OpenAmt > 0.16f)
 		{
-			// Pseudo-syllable phase from frame index so weak frames still vary.
-			const float Phase = FMath::Fmod((float)i * 0.37f, 4.0f);
+			// 0=A, 1=I, 2=U, 3=A again — avoid injecting synthetic O on weak frames.
+			const float Phase = FMath::Fmod((float)i * 0.37f, 3.0f);
 			if (Phase < 1.0f)
 			{
 				F.Jaw = FMath::Max(F.Jaw, OpenAmt * 0.85f);
@@ -795,13 +807,9 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 				F.Wide = FMath::Max(F.Wide, OpenAmt * 0.8f);
 				F.Jaw = FMath::Max(F.Jaw, OpenAmt * 0.2f);
 			}
-			else if (Phase < 3.0f)
-			{
-				F.Pucker = FMath::Max(F.Pucker, OpenAmt * 0.85f);
-			}
 			else
 			{
-				F.Funnel = FMath::Max(F.Funnel, OpenAmt * 0.85f);
+				F.Pucker = FMath::Max(F.Pucker, OpenAmt * 0.85f);
 			}
 		}
 
@@ -831,7 +839,8 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 	SmoothChannel(&FCineVisemeFrame::Jaw, 0.7f, 0.58f);
 	SmoothChannel(&FCineVisemeFrame::Wide, 0.55f, 0.5f);
 	SmoothChannel(&FCineVisemeFrame::Pucker, 0.55f, 0.5f);
-	SmoothChannel(&FCineVisemeFrame::Funnel, 0.55f, 0.5f);
+	// Faster O release so Funnel doesn't linger into the next syllable.
+	SmoothChannel(&FCineVisemeFrame::Funnel, 0.58f, 0.78f);
 	SmoothChannel(&FCineVisemeFrame::Close, 0.9f, 0.68f);
 	SmoothChannel(&FCineVisemeFrame::Sibilant, 0.55f, 0.45f);
 
