@@ -5,6 +5,7 @@
 #include "CineRenderLauncher.h"
 #include "CineTrailerProcessor.h"
 #include "SCineDirectorAutoRetargetPanel.h"
+#include "SCineDirectorBodyPanel.h"
 #include "SCineDirectorFacePanel.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Misc/Paths.h"
@@ -141,6 +142,17 @@ void SCineDirectorPanel::Construct(const FArguments& InArgs)
 				.BodyContent()
 				[
 					SNew(SCineDirectorAutoRetargetPanel)
+				]
+			]
+
+			+ SScrollBox::Slot().Padding(0.0f, 8.0f, 0.0f, 0.0f)
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(LOCTEXT("BodyTitle", "Body Performance"))
+				.InitiallyCollapsed(true)
+				.BodyContent()
+				[
+					SNew(SCineDirectorBodyPanel)
 				]
 			]
 

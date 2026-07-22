@@ -17,6 +17,14 @@
 - `CineRenderLauncher.*`: queues the open saved Level Sequence and saved map in Movie Render Queue using PIE. Supports PNG, JPEG, EXR (reflectively loaded, with PNG fallback), BMP, MP4 (MRQ command-line encoder; ffmpeg discovered via project settings → PATH → WinGet packages), resolution, and temporal anti-aliasing sample count.
 - `CineTrailerProcessor.*`: `ParseStyle` maps a plain-language edit description to `FCineTrailerStyle` (grade filter, letterbox, found-footage kit, grain level, beat fractions, score mood, title font); `ProcessAsync` runs the ffmpeg pipeline on a background thread — beat slicing with conditional filter chains, title/card generation, per-mood synthesized score with an original whistle motif, final mux. `FindNewestMp4` locates the render that just finished. The panel chains it off `OnExecutorFinished` when Trailer mode is on.
 
+## Body layer
+
+- `CineBodyTypes.h`: `FCineBodySpec` (base/activities/mood/duration) + mood → humanization dials.
+- `CineBodyGrammar.*`: rule-based description → spec (the offline provider; a Claude provider can emit specs behind the same boundary, like IShotPlanProvider).
+- `CineBodyRig.*`: skeleton → semantic joints (VRM-void + Mixamo schemes), component-space declarative posing (absolute deltas + parent-relative finger curls), two-bone arm IK with palm-facing twist, per-joint lag/overshoot evaluation, bone-track bake, stick-figure preview sheets (Saved/CineDirectorBody).
+- `CineBodyAuthor.*`: spec → keyframed FCineBodyAnimDef (sit/stand bases, smoke drag cycles, interleaved look sweeps, mood ticks, ambient breathing/sway).
+- `SCineDirectorBodyPanel.*`: the panel section; also `CineDirector.AuthorBody` console command for headless runs.
+
 ## Face layer
 
 - `CineFaceTypes.h`: canonical face slots (JawOpen ... EyeSquint, gaze, full-face Expr*, plus MouthUpperUp/MouthLowerDown teeth-reveal), `FCineFaceProfile` (mesh → slot curve mapping), `FCineVisemeFrame`.

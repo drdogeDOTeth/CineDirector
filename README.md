@@ -92,6 +92,30 @@ how the description was understood. Anything unmentioned gets a sensible default
 Title, three teaser card lines, and the camera tag are all editable in the panel,
 and finished trailers never overwrite earlier ones.
 
+## Body Performance
+
+Describe a body performance in plain language and CineDirector authors a
+keyframed animation from scratch — no source clips, no retargeting. Select a
+character, **Use Selected Actor**, type e.g. `sitting on the bench smoking,
+nervous, looking around, for 20 seconds`, and **Generate Body Performance**
+bakes a looping bone-track animation (poses, two-bone arm IK with palm-facing
+control, cigarette finger grips, breathing/sway, mood ticks like foot taps and
+knee bounces, per-joint follow-through and overshoot) and layers it onto the
+character in the open Level Sequence.
+
+- **Base**: `sitting` (bench/stool/chair/couch) or standing (default)
+- **Activities**: `smoking`, `looking around` — combined freely; none = idle
+- **Mood**: `nervous`, `chill`, `alert` (+ `very`/`slightly`) — drives tempo,
+  slouch, tick habits and how snappily joints move
+- **Duration**: `for 20 seconds` (defaults picked from the activities)
+
+Works on the void-family VRM rigs and Blender-Mixamo (`mixamorig_*`) rigs; the
+parsed interpretation is logged (`LogCineDirectorBodyGrammar`). Body and face
+output stack on the same actor — a full performance is body + face + lipsync +
+audio from two text boxes. Also available headless:
+`CineDirector.AuthorBody <MeshName> <description...>` bakes the asset and
+writes a stick-figure preview sheet to `Saved/CineDirectorBody/`.
+
 ## Face & Lipsync
 
 The **Face & Lipsync** section animates faces and blends them with body
