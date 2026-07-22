@@ -218,6 +218,17 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
 		[
+			MakeRow(LOCTEXT("ArticulationLabel", "Articulation"),
+				MakeStrengthSlider(
+					ArticulationLabel,
+					[this]() { return Articulation; },
+					[this](float V) { Articulation = V; },
+					0.0f, 2.0f,
+					LOCTEXT("ArticulationTip", "How crisply the mouth hits each shape. Below 1 = soft, mumbled transitions; 1 = default; above 1 = snappy, fully-enunciated MetaHuman-style pronunciation.")))
+		]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
 			MakeRow(LOCTEXT("IsoStrLabel", "Isolation"),
 				MakeStrengthSlider(
 					IsolateStrengthLabel,
@@ -255,6 +266,10 @@ void SCineDirectorFacePanel::RefreshSliderLabels()
 	if (EmotionStrengthLabel.IsValid())
 	{
 		EmotionStrengthLabel->SetText(FText::FromString(FString::Printf(TEXT("%.2f"), EmotionStrength)));
+	}
+	if (ArticulationLabel.IsValid())
+	{
+		ArticulationLabel->SetText(FText::FromString(FString::Printf(TEXT("%.2f"), Articulation)));
 	}
 	if (IsolateStrengthLabel.IsValid())
 	{
@@ -371,6 +386,7 @@ FReply SCineDirectorFacePanel::OnGenerate()
 	Request.bAutoBlink = BlinkCheck->IsChecked();
 	Request.MouthStrength = MouthStrength;
 	Request.EmotionStrength = EmotionStrength;
+	Request.Articulation = Articulation;
 	Request.DurationSeconds = FMath::Clamp(FCString::Atof(*DurationBox->GetText().ToString()), 0.5f, 600.0f);
 	if (Request.DurationSeconds < 0.51f)
 	{
@@ -468,12 +484,12 @@ FReply SCineDirectorFacePanel::OnGenerate()
 		}
 	}
 	SetStatus(FString::Printf(
-		TEXT("Done: %s — %.1fs of %s%s%s | mouth %.2f emotion %.2f layered onto '%s'. %s"),
+		TEXT("Done: %s — %.1fs of %s%s%s | mouth %.2f artic %.2f emotion %.2f layered onto '%s'. %s"),
 		*FaceAnim->GetName(), Request.DurationSeconds,
 		Request.Visemes.Num() > 0 ? (AudioPath.IsEmpty() ? TEXT("procedural talking") : TEXT("audio-driven lipsync")) : TEXT("expression"),
 		*IsoTag,
 		*EmotionNote,
-		MouthStrength, EmotionStrength,
+		MouthStrength, Articulation, EmotionStrength,
 		*Actor->GetActorLabel(),
 		Sound ? TEXT("Audio on sequence track.") : TEXT("")));
 	return FReply::Handled();

@@ -19,6 +19,8 @@ enum class ECineFaceSlot : uint8
 	MouthSmile,
 	MouthFrown,
 	MouthPress,      // lips pressed together, tension
+	MouthUpperUp,    // upper lip raise — upper-teeth reveal on open/wide vowels
+	MouthLowerDown,  // lower lip depress — lower-teeth reveal
 	NoseSneer,
 	BrowUp,          // outer/general brow raise
 	BrowDown,        // knit / anger

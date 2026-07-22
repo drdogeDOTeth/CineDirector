@@ -51,9 +51,12 @@ private:
 	float MouthStrength = 1.3f;
 	/** 1.0 = full pose table; >1 pushes harder (clamped in baker). */
 	float EmotionStrength = 1.0f;
+	/** How crisply visemes hit: <1 soft/mumbly, 1 = as analyzed, >1 snappy enunciation. */
+	float Articulation = 1.0f;
 	float IsolateStrength = 0.75f; // 0 = raw audio, 1 = full isolation blend
 
 	TSharedPtr<STextBlock> MouthStrengthLabel;
 	TSharedPtr<STextBlock> EmotionStrengthLabel;
+	TSharedPtr<STextBlock> ArticulationLabel;
 	TSharedPtr<STextBlock> IsolateStrengthLabel;
 };

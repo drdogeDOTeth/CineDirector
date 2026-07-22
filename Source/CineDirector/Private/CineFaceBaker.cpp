@@ -400,9 +400,14 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 
 	// Lipsync on top of the emotion base (unit gain). Mouth Strength is applied
 	// after exclusive visemes so the slider always has a clear, final effect.
+	// Lips anticipate: speakers pre-shape wide/round mouths ~50 ms before the
+	// voiced sound, so shape channels read slightly ahead while the jaw and
+	// closures stay locked to the audio frame.
+	const int32 LeadFrames = FMath::Clamp(FMath::RoundToInt32(0.055f * Fps), 1, 3);
 	for (int32 Frame = 0; Frame < Request.Visemes.Num() && Frame < NumFrames; ++Frame)
 	{
 		const FCineVisemeFrame& V = Request.Visemes[Frame];
+		const FCineVisemeFrame& VLead = Request.Visemes[FMath::Min(Frame + LeadFrames, Request.Visemes.Num() - 1)];
 		const float Open = FMath::Clamp(V.Jaw * (1.0f - V.Close), 0.0f, 1.0f);
 		Timeline[(int32)ECineFaceSlot::JawOpen][Frame] =
 			FMath::Max(Timeline[(int32)ECineFaceSlot::JawOpen][Frame] * (1.0f - V.Close), Open);
@@ -410,25 +415,90 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 			FMath::Max(Timeline[(int32)ECineFaceSlot::MouthClose][Frame], V.Close);
 		Timeline[(int32)ECineFaceSlot::MouthPress][Frame] =
 			FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPress][Frame], V.Close * 0.7f);
-		if (Open > 0.04f || V.Close > 0.3f || V.Wide > 0.05f || V.Pucker > 0.05f || V.Funnel > 0.05f)
+		if (Open > 0.04f || V.Close > 0.3f || VLead.Wide > 0.05f || VLead.Pucker > 0.05f || VLead.Funnel > 0.05f)
 		{
-			const float ShapeWide = FMath::Clamp((V.Wide + V.Sibilant * 0.4f) * (1.0f - V.Close), 0.0f, 1.0f);
-			const float ShapePucker = FMath::Clamp(V.Pucker * (1.0f - V.Close), 0.0f, 1.0f);
+			const float ShapeWide = FMath::Clamp((VLead.Wide + VLead.Sibilant * 0.4f) * (1.0f - V.Close), 0.0f, 1.0f);
+			const float ShapePucker = FMath::Clamp(VLead.Pucker * (1.0f - V.Close), 0.0f, 1.0f);
 			// Tiny U→O bleed only — larger values kept Funnel alive and stuck exclusive O.
 			const float ShapeFunnel = FMath::Clamp(
-				FMath::Max(V.Funnel, V.Pucker * 0.08f) * (1.0f - V.Close), 0.0f, 1.0f);
+				FMath::Max(VLead.Funnel, VLead.Pucker * 0.08f) * (1.0f - V.Close), 0.0f, 1.0f);
 			Timeline[(int32)ECineFaceSlot::MouthWide][Frame] =
 				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthWide][Frame] * 0.4f, ShapeWide);
 			Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] =
 				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] * 0.35f, ShapePucker);
 			Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] =
 				FMath::Max(Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] * 0.35f, ShapeFunnel);
+
+			// Jaw co-articulation for layered rigs (ARKit/MetaHuman): EE/OO/OH
+			// still drop the jaw under the lip shape — pursing or stretching over
+			// a shut jaw is the classic mumble look. Exclusive A/I/U/O rigs pick
+			// one morph per frame, so extra jaw there would fight the winner.
+			if (!Request.Profile.bExclusiveVisemes)
+			{
+				const float JawSupport = FMath::Max3(
+					ShapeFunnel * 0.50f, ShapePucker * 0.35f, ShapeWide * 0.28f);
+				Timeline[(int32)ECineFaceSlot::JawOpen][Frame] = FMath::Max(
+					Timeline[(int32)ECineFaceSlot::JawOpen][Frame], JawSupport * (1.0f - V.Close));
+			}
 		}
 	}
 
 	if (Request.Profile.bExclusiveVisemes)
 	{
 		ApplyExclusiveVisemes(Timeline, NumFrames);
+	}
+
+	// Articulation (panel slider): reshape mouth channels around a short local
+	// average. Above 1 sharpens transitions — consonants snap shut, vowels peak
+	// harder (stage enunciation); below 1 blends toward the average for a soft,
+	// mumbly read. Close participates so closures crisp up too, but its travel
+	// is never scaled.
+	{
+		const float Art = FMath::Clamp(Request.Articulation, 0.0f, 2.5f);
+		if (!FMath::IsNearlyEqual(Art, 1.0f))
+		{
+			const ECineFaceSlot ArtSlots[] = {
+				ECineFaceSlot::JawOpen, ECineFaceSlot::MouthWide, ECineFaceSlot::MouthPucker,
+				ECineFaceSlot::MouthFunnel, ECineFaceSlot::MouthClose,
+			};
+			const int32 Radius = FMath::Max(1, Fps / 12); // ~80 ms half-window
+			TArray<float> LocalAvg;
+			LocalAvg.SetNumUninitialized(NumFrames);
+			for (ECineFaceSlot Slot : ArtSlots)
+			{
+				TArray<float>& Track = Timeline[(int32)Slot];
+				for (int32 f = 0; f < NumFrames; ++f)
+				{
+					float Sum = 0.0f;
+					int32 Count = 0;
+					for (int32 k = -Radius; k <= Radius; ++k)
+					{
+						const int32 i = f + k;
+						if (i >= 0 && i < NumFrames)
+						{
+							Sum += Track[i];
+							++Count;
+						}
+					}
+					LocalAvg[f] = Sum / FMath::Max(1, Count);
+				}
+				if (Art < 1.0f)
+				{
+					for (int32 f = 0; f < NumFrames; ++f)
+					{
+						Track[f] = FMath::Lerp(LocalAvg[f], Track[f], Art);
+					}
+				}
+				else
+				{
+					const float K = (Art - 1.0f) * 1.4f;
+					for (int32 f = 0; f < NumFrames; ++f)
+					{
+						Track[f] = FMath::Clamp(Track[f] + (Track[f] - LocalAvg[f]) * K, 0.0f, 1.0f);
+					}
+				}
+			}
+		}
 	}
 
 	// Final mouth strength scale (panel slider). 0 = no mouth motion, 1 = as analyzed, 2 = double.
@@ -452,13 +522,83 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		}
 	}
 
-	// Restore brows / full-face expressions after exclusive mouth pass.
-	for (int32 i = 0; i < UE_ARRAY_COUNT(ExpressionSlots); ++i)
+	// Restore brows / full-face expressions after exclusive mouth pass — but let
+	// mouth-region emotion yield while the character is actually talking. A
+	// maxed smile or pressed frown otherwise flattens every viseme into the same
+	// shape; brows and eyes keep carrying the emotion at full strength. The
+	// speech envelope is smoothed with a slow release so the yield breathes with
+	// phrases instead of flickering per syllable.
 	{
-		const int32 Slot = (int32)ExpressionSlots[i];
-		for (int32 f = 0; f < NumFrames; ++f)
+		TArray<float> TalkEnv;
+		TalkEnv.SetNumZeroed(NumFrames);
+		const int32 Jaw = (int32)ECineFaceSlot::JawOpen;
+		const int32 Wide = (int32)ECineFaceSlot::MouthWide;
+		const int32 Pucker = (int32)ECineFaceSlot::MouthPucker;
+		const int32 Funnel = (int32)ECineFaceSlot::MouthFunnel;
+		const int32 Close = (int32)ECineFaceSlot::MouthClose;
+		// Emotion-only bakes (no visemes) keep their pose at full strength —
+		// a surprised open jaw is the emotion, not speech to yield to.
+		if (Request.Visemes.Num() > 0)
 		{
-			Timeline[Slot][f] = FMath::Max(Timeline[Slot][f], ExpressionHold[i][f]);
+			float Env = 0.0f;
+			for (int32 f = 0; f < NumFrames; ++f)
+			{
+				const float Raw = FMath::Clamp(
+					Timeline[Jaw][f] + Timeline[Wide][f] + Timeline[Pucker][f] + Timeline[Funnel][f]
+						+ Timeline[Close][f] * 0.6f,
+					0.0f, 1.0f);
+				const float Alpha = Raw > Env ? 0.45f : 0.06f;
+				Env += (Raw - Env) * Alpha;
+				TalkEnv[f] = Env;
+			}
+		}
+
+		// How much of each slot's emotion gives way at full speech.
+		auto YieldFor = [](ECineFaceSlot Slot) -> float
+		{
+			switch (Slot)
+			{
+			case ECineFaceSlot::MouthSmile:
+			case ECineFaceSlot::MouthFrown:
+				return 0.55f;
+			case ECineFaceSlot::MouthPress:
+				return 0.45f;
+			case ECineFaceSlot::NoseSneer:
+				return 0.25f;
+			case ECineFaceSlot::ExprHappy:
+			case ECineFaceSlot::ExprAngry:
+			case ECineFaceSlot::ExprSad:
+			case ECineFaceSlot::ExprSurprised:
+				return 0.30f; // full-face morphs open the mouth themselves on VRM
+			default:
+				return 0.0f; // brows and eyes hold the emotion
+			}
+		};
+
+		for (int32 i = 0; i < UE_ARRAY_COUNT(ExpressionSlots); ++i)
+		{
+			const int32 Slot = (int32)ExpressionSlots[i];
+			const float Yield = YieldFor(ExpressionSlots[i]);
+			for (int32 f = 0; f < NumFrames; ++f)
+			{
+				const float Damp = 1.0f - Yield * TalkEnv[f];
+				if (ExpressionSlots[i] == ECineFaceSlot::MouthPress)
+				{
+					// Keep the consonant press (rebuilt from closures) at full
+					// strength; only the held emotion press yields.
+					Timeline[Slot][f] = FMath::Max(Timeline[Close][f] * 0.7f, ExpressionHold[i][f] * Damp);
+				}
+				else if (Yield > 0.0f)
+				{
+					// Nothing but the emotion base writes these slots, so the
+					// damped hold is the final value.
+					Timeline[Slot][f] = ExpressionHold[i][f] * Damp;
+				}
+				else
+				{
+					Timeline[Slot][f] = FMath::Max(Timeline[Slot][f], ExpressionHold[i][f]);
+				}
+			}
 		}
 	}
 
@@ -485,6 +625,30 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 					Timeline[Close][f] = 0.0f; // don't force-close morph during pure rest
 				}
 			}
+		}
+	}
+
+	// Teeth reveal: real speech shows teeth almost constantly. Raise the upper
+	// lip and drop the lower lip with open/wide shapes; rounded and closed
+	// mouths hide them again. Derived from the final mouth channels so Mouth
+	// Strength and Articulation carry through, and mapped only on rigs that
+	// have the morphs (ARKit mouthUpperUp/LowerDown, MetaHuman lip raise/depress).
+	{
+		const int32 Jaw = (int32)ECineFaceSlot::JawOpen;
+		const int32 Wide = (int32)ECineFaceSlot::MouthWide;
+		const int32 Pucker = (int32)ECineFaceSlot::MouthPucker;
+		const int32 Funnel = (int32)ECineFaceSlot::MouthFunnel;
+		const int32 Close = (int32)ECineFaceSlot::MouthClose;
+		const int32 Upper = (int32)ECineFaceSlot::MouthUpperUp;
+		const int32 Lower = (int32)ECineFaceSlot::MouthLowerDown;
+		for (int32 f = 0; f < NumFrames; ++f)
+		{
+			const float Round = FMath::Max(Timeline[Pucker][f], Timeline[Funnel][f]);
+			const float Show = FMath::Clamp(1.0f - Round * 0.8f - Timeline[Close][f], 0.0f, 1.0f);
+			const float UpperV = FMath::Clamp((Timeline[Jaw][f] * 0.30f + Timeline[Wide][f] * 0.35f) * Show, 0.0f, 0.65f);
+			const float LowerV = FMath::Clamp((Timeline[Jaw][f] * 0.40f + Timeline[Wide][f] * 0.40f) * Show, 0.0f, 0.75f);
+			Timeline[Upper][f] = FMath::Max(Timeline[Upper][f], UpperV);
+			Timeline[Lower][f] = FMath::Max(Timeline[Lower][f], LowerV);
 		}
 	}
 
@@ -579,9 +743,9 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	Package->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(Anim);
 
-	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Baked '%s': %d curves, %d frames (%.1fs). exclusiveVisemes=%d gaze=%d"),
+	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Baked '%s': %d curves, %d frames (%.1fs). exclusiveVisemes=%d gaze=%d artic=%.2f"),
 		*AssetName, CurvesWritten, NumFrames, (float)NumFrames / Fps,
-		Request.Profile.bExclusiveVisemes ? 1 : 0, bHasGaze ? 1 : 0);
+		Request.Profile.bExclusiveVisemes ? 1 : 0, bHasGaze ? 1 : 0, Request.Articulation);
 	return Anim;
 }
 

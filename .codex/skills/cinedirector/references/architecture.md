@@ -19,10 +19,10 @@
 
 ## Face layer
 
-- `CineFaceTypes.h`: 15 canonical face slots (JawOpen ... EyeSquint), `FCineFaceProfile` (mesh → slot curve mapping), `FCineVisemeFrame`.
-- `CineFaceAnalyzer.*`: maps a mesh's morph targets to slots — exact tables for ARKit/Oculus/Reallusion names, keyword fuzzy fallback, MetaHuman detection (Face_Archetype skeleton or CTRL_expressions curves) with a rig-control preset.
-- `CineLipsync.*`: RIFF WAV parser (+ ffmpeg conversion for other formats), 30fps energy/3-band Goertzel analysis into viseme frames, and procedural talking synthesis.
-- `CineFaceBaker.*`: emotion keyword poses with `then` arcs and auto-blinks; bakes slot timelines into a curves-only additive UAnimSequence (AAT_LocalSpaceBase/ABPT_RefPose, zero bone tracks — safe to layer over body animation); imports audio and adds both to the current Level Sequence in one transaction.
+- `CineFaceTypes.h`: canonical face slots (JawOpen ... EyeSquint, gaze, full-face Expr*, plus MouthUpperUp/MouthLowerDown teeth-reveal), `FCineFaceProfile` (mesh → slot curve mapping), `FCineVisemeFrame`.
+- `CineFaceAnalyzer.*`: maps a mesh's morph targets to slots — exact tables for ARKit/Oculus/Reallusion names, keyword fuzzy fallback, MetaHuman detection (Face_Archetype skeleton or CTRL_expressions curves) with a rig-control preset (incl. mouthUpperLipRaise/mouthLowerLipDepress).
+- `CineLipsync.*`: RIFF WAV parser (+ ffmpeg conversion for other formats), 30fps energy/4-band Goertzel analysis into viseme frames, and procedural talking synthesis.
+- `CineFaceBaker.*`: emotion keyword poses with `then` arcs and auto-blinks; articulation passes for realistic pronunciation — ~50 ms lip pre-shaping ahead of the audio, jaw co-articulation under EE/OO/OH on layered (non-exclusive) rigs, an Articulation slider that sharpens/softens mouth transitions around a short local average, mouth-region emotion yielding to a smoothed speech envelope (brows/eyes hold), and procedural teeth reveal (upper-lip raise / lower-lip depress from the final jaw+wide channels, suppressed by round/closed shapes). Bakes slot timelines into a curves-only additive UAnimSequence (AAT_LocalSpaceBase/ABPT_RefPose, zero bone tracks — safe to layer over body animation); imports audio and adds both to the current Level Sequence in one transaction.
 - `SCineDirectorFacePanel.*`: the panel section.
 
 ## Auto Retarget layer

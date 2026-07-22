@@ -38,6 +38,12 @@ struct FCineFaceBakeRequest
 	float MouthStrength = 1.3f;
 	/** 1.0 = full pose table values; 0 = off; 2 = maxed. */
 	float EmotionStrength = 1.0f;
+	/**
+	 * How crisply the mouth hits each viseme. 1 = as analyzed; below 1 blends
+	 * toward its local average (soft, mumbly); above 1 sharpens transitions so
+	 * consonants snap and vowels peak harder (stage enunciation).
+	 */
+	float Articulation = 1.0f;
 };
 
 /**

@@ -20,6 +20,8 @@ const TCHAR* CineFaceSlotName(ECineFaceSlot Slot)
 	case ECineFaceSlot::MouthSmile:     return TEXT("MouthSmile");
 	case ECineFaceSlot::MouthFrown:     return TEXT("MouthFrown");
 	case ECineFaceSlot::MouthPress:     return TEXT("MouthPress");
+	case ECineFaceSlot::MouthUpperUp:   return TEXT("MouthUpperUp");
+	case ECineFaceSlot::MouthLowerDown: return TEXT("MouthLowerDown");
 	case ECineFaceSlot::NoseSneer:      return TEXT("NoseSneer");
 	case ECineFaceSlot::BrowUp:         return TEXT("BrowUp");
 	case ECineFaceSlot::BrowDown:       return TEXT("BrowDown");
@@ -89,6 +91,10 @@ namespace
 			Add(TEXT("mouthPressRight"), ECineFaceSlot::MouthPress);
 			Add(TEXT("mouthStretchLeft"), ECineFaceSlot::MouthWide);
 			Add(TEXT("mouthStretchRight"), ECineFaceSlot::MouthWide);
+			Add(TEXT("mouthUpperUpLeft"), ECineFaceSlot::MouthUpperUp);
+			Add(TEXT("mouthUpperUpRight"), ECineFaceSlot::MouthUpperUp);
+			Add(TEXT("mouthLowerDownLeft"), ECineFaceSlot::MouthLowerDown);
+			Add(TEXT("mouthLowerDownRight"), ECineFaceSlot::MouthLowerDown);
 			Add(TEXT("noseSneerLeft"), ECineFaceSlot::NoseSneer);
 			Add(TEXT("noseSneerRight"), ECineFaceSlot::NoseSneer);
 			Add(TEXT("browInnerUp"), ECineFaceSlot::BrowSad);
@@ -206,6 +212,12 @@ namespace
 			{ TEXT("funnel"), ECineFaceSlot::MouthFunnel, 1.0f },
 			{ TEXT("mouthwide"), ECineFaceSlot::MouthWide, 1.0f },
 			{ TEXT("stretch"), ECineFaceSlot::MouthWide, 0.8f },
+			{ TEXT("upperlipraise"), ECineFaceSlot::MouthUpperUp, 1.0f },
+			{ TEXT("mouthupperup"), ECineFaceSlot::MouthUpperUp, 1.0f },
+			{ TEXT("upperlipup"), ECineFaceSlot::MouthUpperUp, 1.0f },
+			{ TEXT("lowerlipdepress"), ECineFaceSlot::MouthLowerDown, 1.0f },
+			{ TEXT("mouthlowerdown"), ECineFaceSlot::MouthLowerDown, 1.0f },
+			{ TEXT("lowerlipdown"), ECineFaceSlot::MouthLowerDown, 1.0f },
 			{ TEXT("mouthpress"), ECineFaceSlot::MouthPress, 1.0f },
 			{ TEXT("lipspressed"), ECineFaceSlot::MouthPress, 1.0f },
 			{ TEXT("mouthclose"), ECineFaceSlot::MouthClose, 1.0f },
@@ -243,6 +255,8 @@ namespace
 		Bind(ECineFaceSlot::MouthSmile, { TEXT("CTRL_expressions_mouthCornerPullL"), TEXT("CTRL_expressions_mouthCornerPullR") });
 		Bind(ECineFaceSlot::MouthFrown, { TEXT("CTRL_expressions_mouthCornerDepressL"), TEXT("CTRL_expressions_mouthCornerDepressR") });
 		Bind(ECineFaceSlot::MouthPress, { TEXT("CTRL_expressions_mouthPressUL"), TEXT("CTRL_expressions_mouthPressUR"), TEXT("CTRL_expressions_mouthPressDL"), TEXT("CTRL_expressions_mouthPressDR") });
+		Bind(ECineFaceSlot::MouthUpperUp, { TEXT("CTRL_expressions_mouthUpperLipRaiseL"), TEXT("CTRL_expressions_mouthUpperLipRaiseR") });
+		Bind(ECineFaceSlot::MouthLowerDown, { TEXT("CTRL_expressions_mouthLowerLipDepressL"), TEXT("CTRL_expressions_mouthLowerLipDepressR") });
 		Bind(ECineFaceSlot::NoseSneer, { TEXT("CTRL_expressions_noseWrinkleL"), TEXT("CTRL_expressions_noseWrinkleR") });
 		Bind(ECineFaceSlot::BrowUp, { TEXT("CTRL_expressions_browRaiseOuterL"), TEXT("CTRL_expressions_browRaiseOuterR") });
 		Bind(ECineFaceSlot::BrowDown, { TEXT("CTRL_expressions_browDownL"), TEXT("CTRL_expressions_browDownR") });

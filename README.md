@@ -102,8 +102,16 @@ anything else is fuzzy-matched). Then:
 
 - **Audio-driven lipsync** — point at a dialogue file (WAV directly; MP3/OGG/
   FLAC/M4A via ffmpeg). The energy envelope drives the jaw, spectral balance
-  shapes the mouth, dips become M/B/P closures. The audio is imported and
-  placed on the sequence's audio track, synced to the animation.
+  shapes the mouth, dips become M/B/P closures. Pronunciation is built up
+  MetaHuman-style: lips pre-shape ~50 ms ahead of the sound, rounded/wide
+  vowels keep the jaw dropped underneath, teeth reveal on open shapes
+  (upper-lip raise / lower-lip depress where the rig has them), and mouth-area
+  emotion (smile/frown/press) yields while words are being spoken so visemes
+  stay legible — brows and eyes keep carrying the emotion. The audio is
+  imported and placed on the sequence's audio track, synced to the animation.
+- **Articulation slider** — how crisply the mouth hits each shape: below 1 is
+  soft and mumbly, above 1 snaps consonants and peaks vowels for full stage
+  enunciation.
 - **No audio yet** — "Talking" synthesizes natural syllables and pauses.
 - **Emotions in plain language** — `scared`, `angry`, `happy`, `sad`,
   `surprised`, `disgusted`, `pain`, `suspicious`, `calm`, with `slightly`/`very`
