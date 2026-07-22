@@ -838,8 +838,9 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 	};
 	SmoothChannel(&FCineVisemeFrame::Jaw, 0.7f, 0.58f);
 	SmoothChannel(&FCineVisemeFrame::Wide, 0.55f, 0.5f);
-	SmoothChannel(&FCineVisemeFrame::Pucker, 0.55f, 0.5f);
-	// Faster O release so Funnel doesn't linger into the next syllable.
+	// Fast release on both rounded shapes: syllable tails go dark (low-band),
+	// which scores as U, so a slow release makes every "oo" hang past its word.
+	SmoothChannel(&FCineVisemeFrame::Pucker, 0.55f, 0.72f);
 	SmoothChannel(&FCineVisemeFrame::Funnel, 0.58f, 0.78f);
 	SmoothChannel(&FCineVisemeFrame::Close, 0.9f, 0.68f);
 	SmoothChannel(&FCineVisemeFrame::Sibilant, 0.55f, 0.45f);

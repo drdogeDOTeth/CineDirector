@@ -215,8 +215,9 @@ namespace
 		const int32 Funnel = (int32)ECineFaceSlot::MouthFunnel;
 		const int32 Close = (int32)ECineFaceSlot::MouthClose;
 
-		// A slightly down; I/U up. O near unity so it can't out-hold A/I.
-		const float Bias[4] = { 0.92f, 1.12f, 1.14f, 1.00f };
+		// A slightly down; I up. Rounded shapes (U/O) near unity so they can't
+		// out-hold the next syllable's vowel.
+		const float Bias[4] = { 0.92f, 1.12f, 1.06f, 1.00f };
 		int32 PrevWinner = -1;
 		// Frames we've forced-kept PrevWinner against a different raw winner.
 		int32 StickyHold = 0;
@@ -267,12 +268,13 @@ namespace
 			}
 
 			// Hysteresis: keep previous vowel unless a new one clearly wins.
-			// O (index 3) is easy to leave and can only force-hold briefly —
-			// that was the main "oh stuck on the next syllables" failure mode.
+			// Rounded shapes (U=2, O=3) are easy to leave and can only
+			// force-hold briefly — both had the "stuck rounded mouth hangs into
+			// the next syllable" failure mode.
 			if (PrevWinner >= 0 && PrevWinner != Winner)
 			{
-				const float HoldRatio = (PrevWinner == 3) ? 0.94f : 0.88f;
-				const int32 MaxSticky = (PrevWinner == 3) ? 2 : 5;
+				const float HoldRatio = (PrevWinner >= 2) ? 0.94f : 0.88f;
+				const int32 MaxSticky = (PrevWinner >= 2) ? 2 : 5;
 				const bool bMayHold = StickyHold < MaxSticky
 					&& Weighted[PrevWinner] > BestW * HoldRatio;
 				if (bMayHold)
