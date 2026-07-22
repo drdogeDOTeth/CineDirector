@@ -418,9 +418,79 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 				}
 			}
 		}
+		// Soft-scale ARKit micro targets: void heads + NN-transferred morphs
+		// rubber-band at full 1.0 (brows especially). L/R pairs still both fire;
+		// each curve is just driven gentler.
+		int32 Softened = 0;
+		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
+		{
+			for (FCineFaceCurveTarget& T : Profile.Slots[Slot])
+			{
+				const FString Norm = NormalizeName(T.CurveName.ToString());
+				float Mul = 1.0f;
+				if (Norm.Contains(TEXT("brow")))
+				{
+					Mul = 0.40f;
+				}
+				else if (Norm.Contains(TEXT("mouth")) || Norm.StartsWith(TEXT("jaw")))
+				{
+					// Keep VRM single-letter vowels and grill jawOpen full strength.
+					if (!(Norm.Len() == 1 || Norm == TEXT("jawopen")))
+					{
+						Mul = 0.55f;
+					}
+				}
+				else if (Norm.Contains(TEXT("eye")) && !Norm.Contains(TEXT("blink")))
+				{
+					Mul = 0.45f;
+				}
+				else if (Norm.Contains(TEXT("cheek")) || Norm.Contains(TEXT("sneer")) || Norm.Contains(TEXT("nose")))
+				{
+					Mul = 0.45f;
+				}
+				// Drop duplicate blink aliases (Blink/BlinkL without underscore) if
+				// Blink_L / Blink_R already mapped — both would stack to 2x close.
+				if ((Norm == TEXT("blink") || Norm == TEXT("blinkl") || Norm == TEXT("blinkr"))
+					&& Profile.HasSlot(ECineFaceSlot::EyeBlink))
+				{
+					// Keep underscore variants; zero the aliases.
+					bool bHasUnderscore = false;
+					for (const FCineFaceCurveTarget& Other : Profile.Slots[(int32)ECineFaceSlot::EyeBlink])
+					{
+						const FString On = NormalizeName(Other.CurveName.ToString());
+						if (On == TEXT("blinkl") || On == TEXT("blinkr") || On == TEXT("blinkleft") || On == TEXT("blinkright"))
+						{
+							// blinkl is both BlinkL and Blink_L after normalize — can't distinguish.
+						}
+						if (Other.CurveName.ToString().Contains(TEXT("_")))
+						{
+							bHasUnderscore = true;
+						}
+					}
+					if (bHasUnderscore && !T.CurveName.ToString().Contains(TEXT("_")) && Norm != TEXT("blink"))
+					{
+						Mul = 0.0f; // BlinkL/BlinkR without underscore
+					}
+					else if (Norm == TEXT("blink") && bHasUnderscore)
+					{
+						Mul = 0.0f;
+					}
+				}
+				if (Mul != 1.0f)
+				{
+					T.Scale *= Mul;
+					++Softened;
+				}
+			}
+		}
+		// Prefer exclusive-ish mouth on voids that still have grill-baked A/I/U/O:
+		// if JawOpen still has jawOpen/A after strip failed partially, fine.
+		// Re-enable exclusive when VRM vowels remain dominant? No — we stripped them.
+		// Keep layered for ARKit micros, but lipsync jaw prefers jawOpen only.
+
 		Profile.Notes.Add(FString::Printf(
-			TEXT("Layered ARKit-style face (%d markers) — preferred over VRM vowels/full-face poses so lips/brows don't double-drive. Dropped %d vowel + %d full-face morph bindings. FBX imports work best for this character."),
-			ArkitHits, StrippedVowels, StrippedExprs));
+			TEXT("Layered ARKit-style face (%d markers) — dropped %d VRM vowel + %d full-face bindings, softened %d micro-curve scales (brows/mouth) to avoid stretch."),
+			ArkitHits, StrippedVowels, StrippedExprs, Softened));
 	}
 	else if (VowelHits >= 3)
 	{

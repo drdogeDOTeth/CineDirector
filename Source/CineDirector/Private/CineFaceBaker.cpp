@@ -373,34 +373,32 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		PrevPose = NextPose;
 	}
 
-	// ARKit morphs are authored so 1.0 = extreme travel. Emotion poses were
-	// tuned for softer VRM full-face morphs — ease brows/mouth micro-slots on
-	// layered faces so lips and brows don't rubber-band.
+	// ARKit morphs (esp. NN-transferred onto void heads) travel hard at 1.0.
+	// Emotion poses were tuned for soft VRM full-face morphs — ease micro-slots
+	// aggressively so brows don't spike and mouths don't rubber-band.
 	if (Request.Profile.bLayeredBlendshapes)
 	{
-		const ECineFaceSlot SoftSlots[] = {
-			ECineFaceSlot::BrowUp, ECineFaceSlot::BrowDown, ECineFaceSlot::BrowSad,
-			ECineFaceSlot::MouthSmile, ECineFaceSlot::MouthFrown, ECineFaceSlot::MouthPress,
-			ECineFaceSlot::NoseSneer, ECineFaceSlot::EyeWide, ECineFaceSlot::EyeSquint,
-		};
-		for (ECineFaceSlot S : SoftSlots)
+		auto SoftTrack = [&Timeline](ECineFaceSlot S, float Mul)
 		{
 			for (float& V : Timeline[(int32)S])
 			{
-				V = FMath::Clamp(V * 0.70f, 0.0f, 1.0f);
+				V = FMath::Clamp(V * Mul, 0.0f, 1.0f);
 			}
-		}
-		const ECineFaceSlot ExprSlotsSoft[] = {
-			ECineFaceSlot::ExprHappy, ECineFaceSlot::ExprAngry,
-			ECineFaceSlot::ExprSad, ECineFaceSlot::ExprSurprised,
 		};
-		for (ECineFaceSlot S : ExprSlotsSoft)
-		{
-			for (float& V : Timeline[(int32)S])
-			{
-				V = FMath::Clamp(V * 0.30f, 0.0f, 1.0f);
-			}
-		}
+		// Brows were the worst offender in-editor (pointy forehead peaks).
+		SoftTrack(ECineFaceSlot::BrowUp, 0.32f);
+		SoftTrack(ECineFaceSlot::BrowDown, 0.38f);
+		SoftTrack(ECineFaceSlot::BrowSad, 0.36f);
+		SoftTrack(ECineFaceSlot::MouthSmile, 0.48f);
+		SoftTrack(ECineFaceSlot::MouthFrown, 0.48f);
+		SoftTrack(ECineFaceSlot::MouthPress, 0.55f);
+		SoftTrack(ECineFaceSlot::NoseSneer, 0.40f);
+		SoftTrack(ECineFaceSlot::EyeWide, 0.42f);
+		SoftTrack(ECineFaceSlot::EyeSquint, 0.45f);
+		SoftTrack(ECineFaceSlot::ExprHappy, 0.22f);
+		SoftTrack(ECineFaceSlot::ExprAngry, 0.22f);
+		SoftTrack(ECineFaceSlot::ExprSad, 0.22f);
+		SoftTrack(ECineFaceSlot::ExprSurprised, 0.22f);
 	}
 
 	// Peak of expression slots for diagnostics.
@@ -534,13 +532,13 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	}
 
 	// Final mouth strength scale (panel slider). 0 = no mouth motion, 1 = as analyzed, 2 = double.
-	// Layered ARKit faces get a mild built-in ease so default slider values don't
-	// max every morph (void FBX morphs travel hard at 1.0).
+	// Layered ARKit (esp. transferred void faces) need a stronger built-in ease —
+	// slider 1.0 should look natural, not maxed.
 	{
 		float MouthMul = FMath::Clamp(Request.MouthStrength, 0.0f, 2.5f);
 		if (Request.Profile.bLayeredBlendshapes)
 		{
-			MouthMul *= 0.85f;
+			MouthMul *= 0.72f;
 		}
 		const ECineFaceSlot MouthSlots[] = {
 			ECineFaceSlot::JawOpen, ECineFaceSlot::MouthWide,
