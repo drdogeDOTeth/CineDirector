@@ -373,9 +373,8 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		PrevPose = NextPose;
 	}
 
-	// ARKit morphs (esp. NN-transferred onto void heads) travel hard at 1.0.
-	// Emotion poses were tuned for soft VRM full-face morphs — ease micro-slots
-	// aggressively so brows don't spike and mouths don't rubber-band.
+	// Mild ease only for ARKit micro-emotion on void heads — keep enough headroom
+	// that Emotion slider 1–2 still reads strong (previous 0.3x felt "stuck muted").
 	if (Request.Profile.bLayeredBlendshapes)
 	{
 		auto SoftTrack = [&Timeline](ECineFaceSlot S, float Mul)
@@ -385,20 +384,20 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 				V = FMath::Clamp(V * Mul, 0.0f, 1.0f);
 			}
 		};
-		// Brows were the worst offender in-editor (pointy forehead peaks).
-		SoftTrack(ECineFaceSlot::BrowUp, 0.32f);
-		SoftTrack(ECineFaceSlot::BrowDown, 0.38f);
-		SoftTrack(ECineFaceSlot::BrowSad, 0.36f);
-		SoftTrack(ECineFaceSlot::MouthSmile, 0.48f);
-		SoftTrack(ECineFaceSlot::MouthFrown, 0.48f);
-		SoftTrack(ECineFaceSlot::MouthPress, 0.55f);
-		SoftTrack(ECineFaceSlot::NoseSneer, 0.40f);
-		SoftTrack(ECineFaceSlot::EyeWide, 0.42f);
-		SoftTrack(ECineFaceSlot::EyeSquint, 0.45f);
-		SoftTrack(ECineFaceSlot::ExprHappy, 0.22f);
-		SoftTrack(ECineFaceSlot::ExprAngry, 0.22f);
-		SoftTrack(ECineFaceSlot::ExprSad, 0.22f);
-		SoftTrack(ECineFaceSlot::ExprSurprised, 0.22f);
+		SoftTrack(ECineFaceSlot::BrowUp, 0.82f);
+		SoftTrack(ECineFaceSlot::BrowDown, 0.85f);
+		SoftTrack(ECineFaceSlot::BrowSad, 0.85f);
+		SoftTrack(ECineFaceSlot::MouthSmile, 0.90f);
+		SoftTrack(ECineFaceSlot::MouthFrown, 0.90f);
+		SoftTrack(ECineFaceSlot::MouthPress, 0.92f);
+		SoftTrack(ECineFaceSlot::NoseSneer, 0.85f);
+		SoftTrack(ECineFaceSlot::EyeWide, 0.88f);
+		SoftTrack(ECineFaceSlot::EyeSquint, 0.90f);
+		// Expr* usually unbound on dual voids; keep soft if present.
+		SoftTrack(ECineFaceSlot::ExprHappy, 0.70f);
+		SoftTrack(ECineFaceSlot::ExprAngry, 0.70f);
+		SoftTrack(ECineFaceSlot::ExprSad, 0.70f);
+		SoftTrack(ECineFaceSlot::ExprSurprised, 0.70f);
 	}
 
 	// Peak of expression slots for diagnostics.
@@ -532,14 +531,9 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	}
 
 	// Final mouth strength scale (panel slider). 0 = no mouth motion, 1 = as analyzed, 2 = double.
-	// Layered ARKit (esp. transferred void faces) need a stronger built-in ease —
-	// slider 1.0 should look natural, not maxed.
+	// No hidden ease here — dual voids use exclusive A/I/U/O at full slider authority.
 	{
-		float MouthMul = FMath::Clamp(Request.MouthStrength, 0.0f, 2.5f);
-		if (Request.Profile.bLayeredBlendshapes)
-		{
-			MouthMul *= 0.72f;
-		}
+		const float MouthMul = FMath::Clamp(Request.MouthStrength, 0.0f, 2.5f);
 		const ECineFaceSlot MouthSlots[] = {
 			ECineFaceSlot::JawOpen, ECineFaceSlot::MouthWide,
 			ECineFaceSlot::MouthPucker, ECineFaceSlot::MouthFunnel,
@@ -678,14 +672,18 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		const int32 Close = (int32)ECineFaceSlot::MouthClose;
 		const int32 Upper = (int32)ECineFaceSlot::MouthUpperUp;
 		const int32 Lower = (int32)ECineFaceSlot::MouthLowerDown;
-		const float UpperCap = Request.Profile.bLayeredBlendshapes ? 0.45f : 0.65f;
-		const float LowerCap = Request.Profile.bLayeredBlendshapes ? 0.50f : 0.75f;
+		// Void dual faces: bottom lip (mouthLowerDown) was the remaining stretch —
+		// keep a hint of teeth, not a rubber pull.
+		const float UpperCap = Request.Profile.bLayeredBlendshapes ? 0.40f : 0.65f;
+		const float LowerCap = Request.Profile.bLayeredBlendshapes ? 0.22f : 0.75f;
+		const float JawL = Request.Profile.bLayeredBlendshapes ? 0.22f : 0.40f;
+		const float WideL = Request.Profile.bLayeredBlendshapes ? 0.18f : 0.40f;
 		for (int32 f = 0; f < NumFrames; ++f)
 		{
 			const float Round = FMath::Max(Timeline[Pucker][f], Timeline[Funnel][f]);
 			const float Show = FMath::Clamp(1.0f - Round * 0.8f - Timeline[Close][f], 0.0f, 1.0f);
 			const float UpperV = FMath::Clamp((Timeline[Jaw][f] * 0.30f + Timeline[Wide][f] * 0.35f) * Show, 0.0f, UpperCap);
-			const float LowerV = FMath::Clamp((Timeline[Jaw][f] * 0.40f + Timeline[Wide][f] * 0.40f) * Show, 0.0f, LowerCap);
+			const float LowerV = FMath::Clamp((Timeline[Jaw][f] * JawL + Timeline[Wide][f] * WideL) * Show, 0.0f, LowerCap);
 			Timeline[Upper][f] = FMath::Max(Timeline[Upper][f], UpperV);
 			Timeline[Lower][f] = FMath::Max(Timeline[Lower][f], LowerV);
 		}

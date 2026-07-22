@@ -384,30 +384,77 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 		Unrecognized += bMatched ? 0 : 1;
 	}
 
-	// Dual-export void FBX: ARKit micro-shapes + VRM A/I/U/E/O + Joy/Angry.
-	// Driving both doubles jaw/lips/brows into rubber-face stretch. Prefer ARKit.
+	// Dual-export voids (VRM vowels + ARKit micros, e.g. grills GLB after transfer):
+	// lipsync should stay exclusive A/I/U/O (full punch, grill-baked), while ARKit
+	// brows/smiles add expression. Stacking ARKit mouth* with A/I/U/O was the
+	// rubber-face path — strip ARKit from the exclusive mouth slots only.
 	const bool bArkitRich = ArkitHits >= 6;
-	if (bArkitRich)
+	const bool bVrmMouth = VowelHits >= 3;
+	if (bArkitRich || bVrmMouth)
 	{
-		Profile.bLayeredBlendshapes = true;
-		Profile.bExclusiveVisemes = false;
+		Profile.bLayeredBlendshapes = bArkitRich;
+		if (bVrmMouth)
+		{
+			Profile.bExclusiveVisemes = true;
+		}
 
-		int32 StrippedVowels = 0;
+		int32 StrippedArkitMouth = 0;
 		int32 StrippedExprs = 0;
+		int32 Softened = 0;
+		auto IsExclusiveMouthSlot = [](int32 Slot) -> bool
+		{
+			return Slot == (int32)ECineFaceSlot::JawOpen
+				|| Slot == (int32)ECineFaceSlot::MouthWide
+				|| Slot == (int32)ECineFaceSlot::MouthPucker
+				|| Slot == (int32)ECineFaceSlot::MouthFunnel
+				|| Slot == (int32)ECineFaceSlot::MouthClose;
+		};
+		auto IsArkitMouthish = [&](const FString& Norm) -> bool
+		{
+			// ARKit mouth/jaw micro names — not single-letter VRM vowels / jawOpen.
+			if (IsVrmVowelName(Norm) || Norm == TEXT("jawopen"))
+			{
+				return false;
+			}
+			return Norm.StartsWith(TEXT("mouth"))
+				|| Norm.StartsWith(TEXT("jaw"))
+				|| Norm.Contains(TEXT("viseme"));
+		};
+
 		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
 		{
 			TArray<FCineFaceCurveTarget>& Targets = Profile.Slots[Slot];
 			for (int32 i = Targets.Num() - 1; i >= 0; --i)
 			{
 				const FString Norm = NormalizeName(Targets[i].CurveName.ToString());
-				if (IsVrmVowelName(Norm))
+				// Prefer grill-baked A over ARKit jawOpen on the same slot (double open).
+				if (Slot == (int32)ECineFaceSlot::JawOpen && Norm == TEXT("jawopen") && bVrmMouth)
+				{
+					// Keep jawOpen only if no VRM A is bound.
+					bool bHasA = false;
+					for (const FCineFaceCurveTarget& Other : Targets)
+					{
+						if (NormalizeName(Other.CurveName.ToString()) == TEXT("a"))
+						{
+							bHasA = true;
+							break;
+						}
+					}
+					if (bHasA)
+					{
+						Targets.RemoveAt(i);
+						++StrippedArkitMouth;
+						continue;
+					}
+				}
+				if (bVrmMouth && IsExclusiveMouthSlot(Slot) && IsArkitMouthish(Norm))
 				{
 					Targets.RemoveAt(i);
-					++StrippedVowels;
+					++StrippedArkitMouth;
 					continue;
 				}
-				// Full-face Joy/Angry already bake brows+mouth — keep micro-slots only.
-				if (IsVrmFullFaceName(Norm)
+				// Full-face Joy/Angry stack with ARKit brows — drop expr when micros exist.
+				if (bArkitRich && IsVrmFullFaceName(Norm)
 					&& (Slot == (int32)ECineFaceSlot::ExprHappy
 						|| Slot == (int32)ECineFaceSlot::ExprAngry
 						|| Slot == (int32)ECineFaceSlot::ExprSad
@@ -415,88 +462,62 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 				{
 					Targets.RemoveAt(i);
 					++StrippedExprs;
+					continue;
 				}
 			}
 		}
-		// Soft-scale ARKit micro targets: void heads + NN-transferred morphs
-		// rubber-band at full 1.0 (brows especially). L/R pairs still both fire;
-		// each curve is just driven gentler.
-		int32 Softened = 0;
+
+		// Only tame bottom-lip / teeth morphs (lower-lip stretch in profile shots).
+		// Everything else stays at full curve scale so Mouth/Emotion sliders reach 1–2.
 		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
 		{
 			for (FCineFaceCurveTarget& T : Profile.Slots[Slot])
 			{
 				const FString Norm = NormalizeName(T.CurveName.ToString());
-				float Mul = 1.0f;
-				if (Norm.Contains(TEXT("brow")))
+				if (Norm.Contains(TEXT("mouthlowerdown")) || Norm.Contains(TEXT("lowerlip")))
 				{
-					Mul = 0.40f;
+					T.Scale *= 0.45f;
+					++Softened;
 				}
-				else if (Norm.Contains(TEXT("mouth")) || Norm.StartsWith(TEXT("jaw")))
-				{
-					// Keep VRM single-letter vowels and grill jawOpen full strength.
-					if (!(Norm.Len() == 1 || Norm == TEXT("jawopen")))
-					{
-						Mul = 0.55f;
-					}
-				}
-				else if (Norm.Contains(TEXT("eye")) && !Norm.Contains(TEXT("blink")))
-				{
-					Mul = 0.45f;
-				}
-				else if (Norm.Contains(TEXT("cheek")) || Norm.Contains(TEXT("sneer")) || Norm.Contains(TEXT("nose")))
-				{
-					Mul = 0.45f;
-				}
-				// Drop duplicate blink aliases (Blink/BlinkL without underscore) if
-				// Blink_L / Blink_R already mapped — both would stack to 2x close.
-				if ((Norm == TEXT("blink") || Norm == TEXT("blinkl") || Norm == TEXT("blinkr"))
+				// Drop bare Blink aliases when Blink_L/R exist.
+				if ((Norm == TEXT("blink") || (Norm == TEXT("blinkl") && !T.CurveName.ToString().Contains(TEXT("_")))
+						|| (Norm == TEXT("blinkr") && !T.CurveName.ToString().Contains(TEXT("_"))))
 					&& Profile.HasSlot(ECineFaceSlot::EyeBlink))
 				{
-					// Keep underscore variants; zero the aliases.
 					bool bHasUnderscore = false;
 					for (const FCineFaceCurveTarget& Other : Profile.Slots[(int32)ECineFaceSlot::EyeBlink])
 					{
-						const FString On = NormalizeName(Other.CurveName.ToString());
-						if (On == TEXT("blinkl") || On == TEXT("blinkr") || On == TEXT("blinkleft") || On == TEXT("blinkright"))
-						{
-							// blinkl is both BlinkL and Blink_L after normalize — can't distinguish.
-						}
 						if (Other.CurveName.ToString().Contains(TEXT("_")))
 						{
 							bHasUnderscore = true;
+							break;
 						}
 					}
-					if (bHasUnderscore && !T.CurveName.ToString().Contains(TEXT("_")) && Norm != TEXT("blink"))
+					if (bHasUnderscore)
 					{
-						Mul = 0.0f; // BlinkL/BlinkR without underscore
+						T.Scale = 0.0f;
+						++Softened;
 					}
-					else if (Norm == TEXT("blink") && bHasUnderscore)
-					{
-						Mul = 0.0f;
-					}
-				}
-				if (Mul != 1.0f)
-				{
-					T.Scale *= Mul;
-					++Softened;
 				}
 			}
 		}
-		// Prefer exclusive-ish mouth on voids that still have grill-baked A/I/U/O:
-		// if JawOpen still has jawOpen/A after strip failed partially, fine.
-		// Re-enable exclusive when VRM vowels remain dominant? No — we stripped them.
-		// Keep layered for ARKit micros, but lipsync jaw prefers jawOpen only.
 
-		Profile.Notes.Add(FString::Printf(
-			TEXT("Layered ARKit-style face (%d markers) — dropped %d VRM vowel + %d full-face bindings, softened %d micro-curve scales (brows/mouth) to avoid stretch."),
-			ArkitHits, StrippedVowels, StrippedExprs, Softened));
-	}
-	else if (VowelHits >= 3)
-	{
-		// Pure VRM/MMD (typical void GLB): exclusive A/I/U/E/O, no stacking.
-		Profile.bExclusiveVisemes = true;
-		Profile.Notes.Add(TEXT("VRM/MMD-style exclusive vowel morphs detected — lipsync picks one shape per frame. If lips look limited, reimport the FBX of this character (fuller ARKit blendshape set)."));
+		if (bArkitRich && bVrmMouth)
+		{
+			Profile.Notes.Add(FString::Printf(
+				TEXT("Void dual face: exclusive A/I/U/O lipsync (full strength) + ARKit brows/emotion. Stripped %d ARKit mouth curves from viseme slots, %d full-face expr; soft-scaled %d lower-lip targets."),
+				StrippedArkitMouth, StrippedExprs, Softened));
+		}
+		else if (bArkitRich)
+		{
+			Profile.Notes.Add(FString::Printf(
+				TEXT("Layered ARKit face (%d markers). Soft-scaled %d lower-lip targets only."),
+				ArkitHits, Softened));
+		}
+		else
+		{
+			Profile.Notes.Add(TEXT("VRM/MMD-style exclusive vowel morphs — lipsync picks one shape per frame."));
+		}
 	}
 
 	Profile.Notes.Add(FString::Printf(TEXT("%d morph targets scanned, %d unrecognized."), Morphs.Num(), Unrecognized));
