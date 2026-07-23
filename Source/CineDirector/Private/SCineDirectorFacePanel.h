@@ -45,6 +45,8 @@ private:
 	TSharedPtr<SCheckBox> TalkingCheck;
 	TSharedPtr<SCheckBox> BlinkCheck;
 	TSharedPtr<SCheckBox> IsolateVoiceCheck;
+	/** Opt-in MetaHuman-style ARKit mouth layering + jaw co-articulation on dual voids. */
+	TSharedPtr<SCheckBox> LayeredArkitMouthCheck;
 	TSharedPtr<STextBlock> StatusBlock;
 
 	// Tuning sliders (persisted for the editor session).

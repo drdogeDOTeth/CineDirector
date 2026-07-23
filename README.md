@@ -145,6 +145,9 @@ reimporting the FBX unlocks better face detail.
 - **Articulation slider** — how crisply the mouth hits each shape: below 1 is
   soft and mumbly, above 1 snaps consonants and peaks vowels for full stage
   enunciation.
+- **Layered ARKit mouth** — off by default on dual void faces (A/I/U/O + ARKit):
+  exclusive vowels stay safe. Turn **on** for MetaHuman-style layered mouth +
+  jaw co-articulation under EE/OO/OH (more articulated; can stretch more).
 - **No audio yet** — "Talking" synthesizes natural syllables and pauses.
 - **Emotions in plain language** — `scared`, `angry`, `happy`, `sad`,
   `surprised`, `disgusted`, `pain`, `suspicious`, `calm`, with `slightly`/`very`

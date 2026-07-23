@@ -16,7 +16,12 @@ class USkeletalMesh;
 class FCineFaceAnalyzer
 {
 public:
-	static FCineFaceProfile Analyze(USkeletalMesh* Mesh);
+	/**
+	 * @param bPreferLayeredArkitMouth  When true on dual VRM+ARKit meshes (voids),
+	 *   keep ARKit mouth micros and disable exclusive A/I/U/O so jaw co-articulation
+	 *   and MetaHuman-style layering run. Default false = safer exclusive vowels.
+	 */
+	static FCineFaceProfile Analyze(USkeletalMesh* Mesh, bool bPreferLayeredArkitMouth = false);
 
 	/** One-line "Mapped 9/15 slots (...)" summary for the panel status. */
 	static FString DescribeProfile(const FCineFaceProfile& Profile);

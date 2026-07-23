@@ -275,7 +275,7 @@ namespace
 	}
 }
 
-FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
+FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh, bool bPreferLayeredArkitMouth)
 {
 	FCineFaceProfile Profile;
 	if (!Mesh)
@@ -384,16 +384,21 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 		Unrecognized += bMatched ? 0 : 1;
 	}
 
-	// Dual-export voids (VRM vowels + ARKit micros, e.g. grills GLB after transfer):
-	// lipsync should stay exclusive A/I/U/O (full punch, grill-baked), while ARKit
-	// brows/smiles add expression. Stacking ARKit mouth* with A/I/U/O was the
-	// rubber-face path — strip ARKit from the exclusive mouth slots only.
+	// Dual-export voids (VRM vowels + ARKit micros, e.g. grills GLB after transfer).
+	// Default: exclusive A/I/U/O (safe). Panel "Layered ARKit mouth" opts into
+	// MetaHuman-style layering + jaw co-articulation (may stretch more).
 	const bool bArkitRich = ArkitHits >= 6;
 	const bool bVrmMouth = VowelHits >= 3;
+	const bool bLayeredMouth = bPreferLayeredArkitMouth && bArkitRich;
 	if (bArkitRich || bVrmMouth)
 	{
 		Profile.bLayeredBlendshapes = bArkitRich;
-		if (bVrmMouth)
+		if (bLayeredMouth)
+		{
+			// Opt-in MetaHuman path: layer ARKit mouth + keep A for grill jaw.
+			Profile.bExclusiveVisemes = false;
+		}
+		else if (bVrmMouth)
 		{
 			Profile.bExclusiveVisemes = true;
 		}
@@ -429,7 +434,6 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 				// Prefer grill-baked A over ARKit jawOpen on the same slot (double open).
 				if (Slot == (int32)ECineFaceSlot::JawOpen && Norm == TEXT("jawopen") && bVrmMouth)
 				{
-					// Keep jawOpen only if no VRM A is bound.
 					bool bHasA = false;
 					for (const FCineFaceCurveTarget& Other : Targets)
 					{
@@ -446,19 +450,19 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 						continue;
 					}
 				}
-				if (bVrmMouth && IsExclusiveMouthSlot(Slot) && IsArkitMouthish(Norm))
+				// Default dual-void path: strip ARKit mouth from viseme slots.
+				// Layered mode keeps them so co-articulation + ARKit shapes can run.
+				if (!bLayeredMouth && bVrmMouth && IsExclusiveMouthSlot(Slot) && IsArkitMouthish(Norm))
 				{
 					Targets.RemoveAt(i);
 					++StrippedArkitMouth;
 					continue;
 				}
-				// Keep VRM Joy/Angry/Sorrow — voids read emotion from those morphs.
-				// (Earlier we stripped them and dual voids looked almost dead.)
 			}
 		}
 
-		// Soften only the stretchy ARKit micros. Do NOT touch A/I/U/O, jawOpen,
-		// smiles used for emotion readability, or full-face Expr*.
+		// Soften stretchy ARKit micros. Layered mouth mode also eases ARKit mouth*
+		// slightly so A + mouthPucker don't rubber-band as hard.
 		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
 		{
 			for (FCineFaceCurveTarget& T : Profile.Slots[Slot])
@@ -466,24 +470,33 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 				const FString Norm = NormalizeName(T.CurveName.ToString());
 				if (Norm.Contains(TEXT("mouthlowerdown")) || Norm.Contains(TEXT("lowerlip")))
 				{
-					T.Scale *= 0.45f;
+					T.Scale *= bLayeredMouth ? 0.40f : 0.45f;
+					++Softened;
+				}
+				else if (bLayeredMouth && IsArkitMouthish(Norm) && IsExclusiveMouthSlot(Slot))
+				{
+					T.Scale *= 0.72f;
 					++Softened;
 				}
 				else if (Norm.Contains(TEXT("browouterup")) || (Norm.Contains(TEXT("browouter")) && Norm.Contains(TEXT("up")))
 					|| Norm == TEXT("browinnerup") || Norm.Contains(TEXT("browinner")))
 				{
-					// Outer/inner ups = tent poles on voyagers; voids need some left.
 					T.Scale *= bVrmMouth ? 0.70f : 0.40f;
 					++Softened;
 				}
-				// browDown* stays full — angry must read on voids.
 			}
 		}
 
-		if (bArkitRich && bVrmMouth)
+		if (bLayeredMouth)
 		{
 			Profile.Notes.Add(FString::Printf(
-				TEXT("Void dual face: exclusive A/I/U/O (full) + Joy/Angry + ARKit micros. Stripped %d ARKit mouth curves from viseme slots; soft-scaled %d lower-lip/brow-up targets."),
+				TEXT("Layered ARKit mouth ON: exclusive off, jaw co-articulation on, ARKit mouth micros kept (soft-scaled). %d stretchy targets eased. May stretch more than exclusive mode."),
+				Softened));
+		}
+		else if (bArkitRich && bVrmMouth)
+		{
+			Profile.Notes.Add(FString::Printf(
+				TEXT("Void dual face (exclusive A/I/U/O): stripped %d ARKit mouth curves from viseme slots; soft-scaled %d lower-lip/brow-up targets. Enable \"Layered ARKit mouth\" for MetaHuman-style co-articulation."),
 				StrippedArkitMouth, Softened));
 		}
 		else if (bArkitRich)

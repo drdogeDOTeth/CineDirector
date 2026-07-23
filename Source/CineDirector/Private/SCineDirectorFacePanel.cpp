@@ -185,6 +185,19 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 				])
 		]
 
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			SAssignNew(LayeredArkitMouthCheck, SCheckBox)
+			.IsChecked(ECheckBoxState::Unchecked)
+			.ToolTipText(LOCTEXT("LayeredArkitMouthTip",
+				"For dual void faces (A/I/U/O + ARKit): off = safe exclusive vowels (default). "
+				"On = MetaHuman-style layered ARKit mouth + jaw co-articulation under EE/OO/OH. "
+				"Reads more articulated; may stretch more. No effect on pure VRM or pure MetaHuman."))
+			[
+				SNew(STextBlock).Text(LOCTEXT("LayeredArkitMouth", "Layered ARKit mouth (MetaHuman-style)"))
+			]
+		]
+
 		// --- Strength sliders ---
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 2.0f)
 		[
@@ -357,7 +370,8 @@ FReply SCineDirectorFacePanel::OnAnalyzeFace()
 		SetStatus(TEXT("Pick a character with a skeletal mesh first (Use Selected Actor)."), true);
 		return FReply::Handled();
 	}
-	const FCineFaceProfile Profile = FCineFaceAnalyzer::Analyze(Mesh);
+	const bool bLayeredMouth = LayeredArkitMouthCheck.IsValid() && LayeredArkitMouthCheck->IsChecked();
+	const FCineFaceProfile Profile = FCineFaceAnalyzer::Analyze(Mesh, bLayeredMouth);
 	SetStatus(FCineFaceAnalyzer::DescribeProfile(Profile), Profile.NumMappedSlots() == 0);
 	return FReply::Handled();
 }
@@ -374,7 +388,8 @@ FReply SCineDirectorFacePanel::OnGenerate()
 
 	FCineFaceBakeRequest Request;
 	Request.Mesh = Mesh;
-	Request.Profile = FCineFaceAnalyzer::Analyze(Mesh);
+	const bool bLayeredMouth = LayeredArkitMouthCheck.IsValid() && LayeredArkitMouthCheck->IsChecked();
+	Request.Profile = FCineFaceAnalyzer::Analyze(Mesh, bLayeredMouth);
 	if (Request.Profile.NumMappedSlots() == 0)
 	{
 		SetStatus(FCineFaceAnalyzer::DescribeProfile(Request.Profile), true);
