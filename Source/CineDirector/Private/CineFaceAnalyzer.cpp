@@ -399,7 +399,6 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 		}
 
 		int32 StrippedArkitMouth = 0;
-		int32 StrippedExprs = 0;
 		int32 Softened = 0;
 		auto IsExclusiveMouthSlot = [](int32 Slot) -> bool
 		{
@@ -453,22 +452,13 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 					++StrippedArkitMouth;
 					continue;
 				}
-				// Full-face Joy/Angry stack with ARKit brows — drop expr when micros exist.
-				if (bArkitRich && IsVrmFullFaceName(Norm)
-					&& (Slot == (int32)ECineFaceSlot::ExprHappy
-						|| Slot == (int32)ECineFaceSlot::ExprAngry
-						|| Slot == (int32)ECineFaceSlot::ExprSad
-						|| Slot == (int32)ECineFaceSlot::ExprSurprised))
-				{
-					Targets.RemoveAt(i);
-					++StrippedExprs;
-					continue;
-				}
+				// Keep VRM Joy/Angry/Sorrow — voids read emotion from those morphs.
+				// (Earlier we stripped them and dual voids looked almost dead.)
 			}
 		}
 
-		// Tame only the stretchy micros: bottom lip + brows (voyager native ARKit
-		// and void-transferred brows both peak hard at 1.0). Mouth vowels stay full.
+		// Soften only the stretchy ARKit micros. Do NOT touch A/I/U/O, jawOpen,
+		// smiles used for emotion readability, or full-face Expr*.
 		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
 		{
 			for (FCineFaceCurveTarget& T : Profile.Slots[Slot])
@@ -479,40 +469,27 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 					T.Scale *= 0.45f;
 					++Softened;
 				}
-				else if (Norm.Contains(TEXT("brow")))
+				else if (Norm.Contains(TEXT("browouterup")) || (Norm.Contains(TEXT("browouter")) && Norm.Contains(TEXT("up")))
+					|| Norm == TEXT("browinnerup") || Norm.Contains(TEXT("browinner")))
 				{
-					// Outer/inner ups are the forehead spikes; down still needs some angry punch.
-					if (Norm.Contains(TEXT("inner")))
-					{
-						T.Scale *= 0.32f;
-					}
-					else if (Norm.Contains(TEXT("outerup")) || (Norm.Contains(TEXT("outer")) && Norm.Contains(TEXT("up"))))
-					{
-						T.Scale *= 0.35f;
-					}
-					else if (Norm.Contains(TEXT("outer")))
-					{
-						T.Scale *= 0.40f;
-					}
-					else
-					{
-						T.Scale *= 0.50f; // browDown*
-					}
+					// Outer/inner ups = tent poles on voyagers; voids need some left.
+					T.Scale *= bVrmMouth ? 0.70f : 0.40f;
 					++Softened;
 				}
+				// browDown* stays full — angry must read on voids.
 			}
 		}
 
 		if (bArkitRich && bVrmMouth)
 		{
 			Profile.Notes.Add(FString::Printf(
-				TEXT("Void dual face: exclusive A/I/U/O lipsync (full strength) + ARKit brows/emotion. Stripped %d ARKit mouth curves from viseme slots, %d full-face expr; soft-scaled %d stretchy targets."),
-				StrippedArkitMouth, StrippedExprs, Softened));
+				TEXT("Void dual face: exclusive A/I/U/O (full) + Joy/Angry + ARKit micros. Stripped %d ARKit mouth curves from viseme slots; soft-scaled %d lower-lip/brow-up targets."),
+				StrippedArkitMouth, Softened));
 		}
 		else if (bArkitRich)
 		{
 			Profile.Notes.Add(FString::Printf(
-				TEXT("Layered ARKit face (%d markers). Soft-scaled %d stretchy targets."),
+				TEXT("Layered ARKit face (%d markers). Soft-scaled %d stretchy brow-up/lip targets."),
 				ArkitHits, Softened));
 		}
 		else

@@ -49,41 +49,39 @@ namespace
 	 * Sorrow/Surprised morphs read clearly; micro-slots (brows, squint, etc.)
 	 * still fire for ARKit / MetaHuman faces that lack full-face morphs.
 	 */
-	// Brow rule for ARKit micros: never max BrowUp + BrowSad together — outer-up
-	// and inner-up both at ~1.0 tent the forehead into hats/glasses (voyagers).
+	// Voids read emotion from full-face Joy/Angry/Sorrow. ARKit micros add polish.
+	// Avoid maxing BrowUp + BrowSad together (voyager tent-brows into glasses).
 	const FEmotionDef GEmotions[] = {
 		{ TEXT("scared,afraid,terrified,fear,frightened"),
-			{ { ECineFaceSlot::ExprSurprised, 0.75f },
-			  // Inner concern only — outer-up was stacking into rubber peaks.
-			  { ECineFaceSlot::BrowSad, 0.55f }, { ECineFaceSlot::EyeWide, 0.85f },
+			{ { ECineFaceSlot::ExprSurprised, 0.90f },
+			  { ECineFaceSlot::BrowSad, 0.70f }, { ECineFaceSlot::EyeWide, 0.95f },
 			  { ECineFaceSlot::MouthFrown, 0.55f }, { ECineFaceSlot::MouthPress, 0.45f } } },
 		{ TEXT("angry,furious,mad,rage,pissed"),
-			{ { ECineFaceSlot::ExprAngry, 0.85f },
-			  { ECineFaceSlot::BrowDown, 0.70f }, { ECineFaceSlot::EyeSquint, 0.75f }, { ECineFaceSlot::NoseSneer, 0.75f },
-			  { ECineFaceSlot::MouthPress, 0.75f }, { ECineFaceSlot::MouthFrown, 0.65f } } },
+			{ { ECineFaceSlot::ExprAngry, 1.0f },
+			  { ECineFaceSlot::BrowDown, 0.90f }, { ECineFaceSlot::EyeSquint, 0.80f }, { ECineFaceSlot::NoseSneer, 0.85f },
+			  { ECineFaceSlot::MouthPress, 0.80f }, { ECineFaceSlot::MouthFrown, 0.70f } } },
 		{ TEXT("happy,joyful,cheerful,smiling,glad"),
-			// Strong default; panel Emotion Strength slider can dial down if too wide.
-			{ { ECineFaceSlot::ExprHappy, 0.85f },
-			  { ECineFaceSlot::MouthSmile, 0.8f }, { ECineFaceSlot::EyeSquint, 0.35f }, { ECineFaceSlot::BrowUp, 0.18f } } },
+			{ { ECineFaceSlot::ExprHappy, 0.90f },
+			  { ECineFaceSlot::MouthSmile, 0.85f }, { ECineFaceSlot::EyeSquint, 0.35f }, { ECineFaceSlot::BrowUp, 0.22f } } },
 		{ TEXT("sad,somber,mournful,depressed,grief"),
-			{ { ECineFaceSlot::ExprSad, 0.90f },
-			  { ECineFaceSlot::BrowSad, 0.65f }, { ECineFaceSlot::MouthFrown, 0.90f }, { ECineFaceSlot::EyeBlink, 0.15f } } },
+			{ { ECineFaceSlot::ExprSad, 1.0f },
+			  { ECineFaceSlot::BrowSad, 0.85f }, { ECineFaceSlot::MouthFrown, 0.95f }, { ECineFaceSlot::EyeBlink, 0.15f } } },
 		{ TEXT("surprised,shocked,amazed,startled"),
-			{ { ECineFaceSlot::ExprSurprised, 0.85f },
-			  { ECineFaceSlot::BrowUp, 0.55f }, { ECineFaceSlot::EyeWide, 0.90f }, { ECineFaceSlot::JawOpen, 0.40f } } },
+			{ { ECineFaceSlot::ExprSurprised, 1.0f },
+			  { ECineFaceSlot::BrowUp, 0.65f }, { ECineFaceSlot::EyeWide, 1.0f }, { ECineFaceSlot::JawOpen, 0.45f } } },
 		{ TEXT("disgusted,disgust,revolted,grossed"),
-			{ { ECineFaceSlot::ExprAngry, 0.65f },
-			  { ECineFaceSlot::NoseSneer, 0.85f }, { ECineFaceSlot::BrowDown, 0.60f }, { ECineFaceSlot::MouthFrown, 0.75f },
-			  { ECineFaceSlot::EyeSquint, 0.65f } } },
+			{ { ECineFaceSlot::ExprAngry, 0.75f },
+			  { ECineFaceSlot::NoseSneer, 1.0f }, { ECineFaceSlot::BrowDown, 0.75f }, { ECineFaceSlot::MouthFrown, 0.80f },
+			  { ECineFaceSlot::EyeSquint, 0.70f } } },
 		{ TEXT("pain,hurt,agony,wincing"),
-			{ { ECineFaceSlot::ExprSad, 0.70f },
-			  { ECineFaceSlot::EyeSquint, 0.90f }, { ECineFaceSlot::BrowSad, 0.55f }, { ECineFaceSlot::NoseSneer, 0.65f },
-			  { ECineFaceSlot::MouthWide, 0.50f } } },
+			{ { ECineFaceSlot::ExprSad, 0.85f },
+			  { ECineFaceSlot::EyeSquint, 1.0f }, { ECineFaceSlot::BrowSad, 0.75f }, { ECineFaceSlot::NoseSneer, 0.70f },
+			  { ECineFaceSlot::MouthWide, 0.55f } } },
 		{ TEXT("suspicious,wary,distrustful,skeptical"),
-			{ { ECineFaceSlot::ExprAngry, 0.50f },
-			  { ECineFaceSlot::BrowDown, 0.55f }, { ECineFaceSlot::EyeSquint, 0.85f }, { ECineFaceSlot::MouthPress, 0.55f } } },
+			{ { ECineFaceSlot::ExprAngry, 0.60f },
+			  { ECineFaceSlot::BrowDown, 0.75f }, { ECineFaceSlot::EyeSquint, 0.90f }, { ECineFaceSlot::MouthPress, 0.60f } } },
 		{ TEXT("calm,neutral,relaxed,blank"),
-			{ { ECineFaceSlot::BrowUp, 0.08f }, { ECineFaceSlot::MouthSmile, 0.1f } } },
+			{ { ECineFaceSlot::BrowUp, 0.10f }, { ECineFaceSlot::MouthSmile, 0.12f } } },
 	};
 
 	/** Per-slot values one emotion segment settles at, or empty for neutral. */
@@ -300,7 +298,7 @@ namespace
 
 			// Punch winner so A/I/U/O travel further; Mouth Strength multiplies after.
 			const float Raw = Vals[Winner];
-			const float Punch = FMath::Clamp(FMath::Pow(FMath::Max(Raw, BestW * 0.85f), 0.55f) * 1.38f, 0.0f, 1.0f);
+			const float Punch = FMath::Clamp(FMath::Pow(FMath::Max(Raw, BestW * 0.85f), 0.50f) * 1.50f, 0.0f, 1.0f);
 			Timeline[Jaw][f]    = (Winner == 0) ? Punch : 0.0f;
 			Timeline[Wide][f]   = (Winner == 1) ? Punch : 0.0f;
 			Timeline[Pucker][f] = (Winner == 2) ? Punch : 0.0f;
@@ -376,8 +374,8 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		PrevPose = NextPose;
 	}
 
-	// Mild ease only for ARKit micro-emotion on void heads — keep enough headroom
-	// that Emotion slider 1–2 still reads strong (previous 0.3x felt "stuck muted").
+	// Layered ARKit: only tame brow *lift* stacking (voyager tent-poles). Full-face
+	// Joy/Angry and mouth channels stay full so voids stay readable at Emotion 1–2.
 	if (Request.Profile.bLayeredBlendshapes)
 	{
 		auto SoftTrack = [&Timeline](ECineFaceSlot S, float Mul)
@@ -387,29 +385,16 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 				V = FMath::Clamp(V * Mul, 0.0f, 1.0f);
 			}
 		};
-		// Brows: ARKit L+R outer + inner all fire per slot — soft hard so hats/
-		// glasses don't get tent-poles (voyager scared/surprised was the worst).
-		SoftTrack(ECineFaceSlot::BrowUp, 0.42f);
-		SoftTrack(ECineFaceSlot::BrowDown, 0.55f);
-		SoftTrack(ECineFaceSlot::BrowSad, 0.45f);
-		SoftTrack(ECineFaceSlot::MouthSmile, 0.90f);
-		SoftTrack(ECineFaceSlot::MouthFrown, 0.90f);
-		SoftTrack(ECineFaceSlot::MouthPress, 0.92f);
-		SoftTrack(ECineFaceSlot::NoseSneer, 0.85f);
-		SoftTrack(ECineFaceSlot::EyeWide, 0.88f);
-		SoftTrack(ECineFaceSlot::EyeSquint, 0.90f);
-		// Expr* usually unbound on dual voids; keep soft if present.
-		SoftTrack(ECineFaceSlot::ExprHappy, 0.70f);
-		SoftTrack(ECineFaceSlot::ExprAngry, 0.70f);
-		SoftTrack(ECineFaceSlot::ExprSad, 0.70f);
-		SoftTrack(ECineFaceSlot::ExprSurprised, 0.70f);
+		SoftTrack(ECineFaceSlot::BrowUp, 0.70f);
+		SoftTrack(ECineFaceSlot::BrowSad, 0.75f);
+		// BrowDown / mouth / Expr* intentionally not softened here.
 
-		// Hard cap: outer-up + inner-up both high = tent poles into glasses/hats.
+		// Cap outer-up + inner-up combined (glasses/hats).
 		{
 			TArray<float>& Up = Timeline[(int32)ECineFaceSlot::BrowUp];
 			TArray<float>& Sad = Timeline[(int32)ECineFaceSlot::BrowSad];
 			const int32 N = Up.Num();
-			constexpr float MaxCombinedLift = 0.62f;
+			constexpr float MaxCombinedLift = 0.85f;
 			for (int32 f = 0; f < N; ++f)
 			{
 				const float Sum = Up[f] + Sad[f];
@@ -553,24 +538,20 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		}
 	}
 
-	// Final mouth strength scale (panel slider). 0 = no mouth motion, 1 = as analyzed, 2 = double.
-	// No hidden ease here — dual voids use exclusive A/I/U/O at full slider authority.
+	// Final mouth strength scale (panel slider). 0 = off, 1 = as analyzed, 2 = double.
+	// Always apply (including 1.0) so the slider is never a no-op after exclusive punch.
 	{
 		const float MouthMul = FMath::Clamp(Request.MouthStrength, 0.0f, 2.5f);
 		const ECineFaceSlot MouthSlots[] = {
 			ECineFaceSlot::JawOpen, ECineFaceSlot::MouthWide,
 			ECineFaceSlot::MouthPucker, ECineFaceSlot::MouthFunnel,
-			// Close/press stay unscaled so consonants still shut cleanly at low strength.
 		};
-		if (!FMath::IsNearlyEqual(MouthMul, 1.0f))
+		for (ECineFaceSlot Slot : MouthSlots)
 		{
-			for (ECineFaceSlot Slot : MouthSlots)
+			TArray<float>& Track = Timeline[(int32)Slot];
+			for (float& V : Track)
 			{
-				TArray<float>& Track = Timeline[(int32)Slot];
-				for (float& V : Track)
-				{
-					V = FMath::Clamp(V * MouthMul, 0.0f, 1.0f);
-				}
+				V = FMath::Clamp(V * MouthMul, 0.0f, 1.0f);
 			}
 		}
 	}
