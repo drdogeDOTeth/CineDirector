@@ -481,18 +481,22 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 				}
 				else if (Norm.Contains(TEXT("brow")))
 				{
-					// Outer/inner ups are the forehead spikes; down still needs punch for angry.
+					// Outer/inner ups are the forehead spikes; down still needs some angry punch.
 					if (Norm.Contains(TEXT("inner")))
 					{
-						T.Scale *= 0.50f;
+						T.Scale *= 0.32f;
 					}
-					else if (Norm.Contains(TEXT("outerup")) || Norm.Contains(TEXT("outer")))
+					else if (Norm.Contains(TEXT("outerup")) || (Norm.Contains(TEXT("outer")) && Norm.Contains(TEXT("up"))))
 					{
-						T.Scale *= 0.55f;
+						T.Scale *= 0.35f;
+					}
+					else if (Norm.Contains(TEXT("outer")))
+					{
+						T.Scale *= 0.40f;
 					}
 					else
 					{
-						T.Scale *= 0.65f; // browDown*
+						T.Scale *= 0.50f; // browDown*
 					}
 					++Softened;
 				}

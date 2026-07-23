@@ -49,38 +49,41 @@ namespace
 	 * Sorrow/Surprised morphs read clearly; micro-slots (brows, squint, etc.)
 	 * still fire for ARKit / MetaHuman faces that lack full-face morphs.
 	 */
+	// Brow rule for ARKit micros: never max BrowUp + BrowSad together — outer-up
+	// and inner-up both at ~1.0 tent the forehead into hats/glasses (voyagers).
 	const FEmotionDef GEmotions[] = {
 		{ TEXT("scared,afraid,terrified,fear,frightened"),
-			{ { ECineFaceSlot::ExprSurprised, 0.9f },
-			  { ECineFaceSlot::BrowSad, 1.0f }, { ECineFaceSlot::BrowUp, 0.95f }, { ECineFaceSlot::EyeWide, 1.0f },
+			{ { ECineFaceSlot::ExprSurprised, 0.75f },
+			  // Inner concern only — outer-up was stacking into rubber peaks.
+			  { ECineFaceSlot::BrowSad, 0.55f }, { ECineFaceSlot::EyeWide, 0.85f },
 			  { ECineFaceSlot::MouthFrown, 0.55f }, { ECineFaceSlot::MouthPress, 0.45f } } },
 		{ TEXT("angry,furious,mad,rage,pissed"),
-			{ { ECineFaceSlot::ExprAngry, 1.0f },
-			  { ECineFaceSlot::BrowDown, 1.0f }, { ECineFaceSlot::EyeSquint, 0.8f }, { ECineFaceSlot::NoseSneer, 0.9f },
-			  { ECineFaceSlot::MouthPress, 0.8f }, { ECineFaceSlot::MouthFrown, 0.7f } } },
+			{ { ECineFaceSlot::ExprAngry, 0.85f },
+			  { ECineFaceSlot::BrowDown, 0.70f }, { ECineFaceSlot::EyeSquint, 0.75f }, { ECineFaceSlot::NoseSneer, 0.75f },
+			  { ECineFaceSlot::MouthPress, 0.75f }, { ECineFaceSlot::MouthFrown, 0.65f } } },
 		{ TEXT("happy,joyful,cheerful,smiling,glad"),
 			// Strong default; panel Emotion Strength slider can dial down if too wide.
 			{ { ECineFaceSlot::ExprHappy, 0.85f },
-			  { ECineFaceSlot::MouthSmile, 0.8f }, { ECineFaceSlot::EyeSquint, 0.35f }, { ECineFaceSlot::BrowUp, 0.28f } } },
+			  { ECineFaceSlot::MouthSmile, 0.8f }, { ECineFaceSlot::EyeSquint, 0.35f }, { ECineFaceSlot::BrowUp, 0.18f } } },
 		{ TEXT("sad,somber,mournful,depressed,grief"),
-			{ { ECineFaceSlot::ExprSad, 1.0f },
-			  { ECineFaceSlot::BrowSad, 1.0f }, { ECineFaceSlot::MouthFrown, 0.95f }, { ECineFaceSlot::EyeBlink, 0.15f } } },
+			{ { ECineFaceSlot::ExprSad, 0.90f },
+			  { ECineFaceSlot::BrowSad, 0.65f }, { ECineFaceSlot::MouthFrown, 0.90f }, { ECineFaceSlot::EyeBlink, 0.15f } } },
 		{ TEXT("surprised,shocked,amazed,startled"),
-			{ { ECineFaceSlot::ExprSurprised, 1.0f },
-			  { ECineFaceSlot::BrowUp, 1.0f }, { ECineFaceSlot::EyeWide, 1.0f }, { ECineFaceSlot::JawOpen, 0.45f } } },
+			{ { ECineFaceSlot::ExprSurprised, 0.85f },
+			  { ECineFaceSlot::BrowUp, 0.55f }, { ECineFaceSlot::EyeWide, 0.90f }, { ECineFaceSlot::JawOpen, 0.40f } } },
 		{ TEXT("disgusted,disgust,revolted,grossed"),
-			{ { ECineFaceSlot::ExprAngry, 0.7f },
-			  { ECineFaceSlot::NoseSneer, 1.0f }, { ECineFaceSlot::BrowDown, 0.85f }, { ECineFaceSlot::MouthFrown, 0.8f },
-			  { ECineFaceSlot::EyeSquint, 0.7f } } },
+			{ { ECineFaceSlot::ExprAngry, 0.65f },
+			  { ECineFaceSlot::NoseSneer, 0.85f }, { ECineFaceSlot::BrowDown, 0.60f }, { ECineFaceSlot::MouthFrown, 0.75f },
+			  { ECineFaceSlot::EyeSquint, 0.65f } } },
 		{ TEXT("pain,hurt,agony,wincing"),
-			{ { ECineFaceSlot::ExprSad, 0.8f },
-			  { ECineFaceSlot::EyeSquint, 1.0f }, { ECineFaceSlot::BrowSad, 0.95f }, { ECineFaceSlot::NoseSneer, 0.75f },
-			  { ECineFaceSlot::MouthWide, 0.55f } } },
+			{ { ECineFaceSlot::ExprSad, 0.70f },
+			  { ECineFaceSlot::EyeSquint, 0.90f }, { ECineFaceSlot::BrowSad, 0.55f }, { ECineFaceSlot::NoseSneer, 0.65f },
+			  { ECineFaceSlot::MouthWide, 0.50f } } },
 		{ TEXT("suspicious,wary,distrustful,skeptical"),
-			{ { ECineFaceSlot::ExprAngry, 0.55f },
-			  { ECineFaceSlot::BrowDown, 0.85f }, { ECineFaceSlot::EyeSquint, 0.9f }, { ECineFaceSlot::MouthPress, 0.6f } } },
+			{ { ECineFaceSlot::ExprAngry, 0.50f },
+			  { ECineFaceSlot::BrowDown, 0.55f }, { ECineFaceSlot::EyeSquint, 0.85f }, { ECineFaceSlot::MouthPress, 0.55f } } },
 		{ TEXT("calm,neutral,relaxed,blank"),
-			{ { ECineFaceSlot::BrowUp, 0.12f }, { ECineFaceSlot::MouthSmile, 0.1f } } },
+			{ { ECineFaceSlot::BrowUp, 0.08f }, { ECineFaceSlot::MouthSmile, 0.1f } } },
 	};
 
 	/** Per-slot values one emotion segment settles at, or empty for neutral. */
@@ -384,11 +387,11 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 				V = FMath::Clamp(V * Mul, 0.0f, 1.0f);
 			}
 		};
-		// Brows: native ARKit (voyagers) + transferred voids still peak; keep
-		// more headroom than mouth so Emotion 1–2 is usable without spikes.
-		SoftTrack(ECineFaceSlot::BrowUp, 0.62f);
-		SoftTrack(ECineFaceSlot::BrowDown, 0.70f);
-		SoftTrack(ECineFaceSlot::BrowSad, 0.65f);
+		// Brows: ARKit L+R outer + inner all fire per slot — soft hard so hats/
+		// glasses don't get tent-poles (voyager scared/surprised was the worst).
+		SoftTrack(ECineFaceSlot::BrowUp, 0.42f);
+		SoftTrack(ECineFaceSlot::BrowDown, 0.55f);
+		SoftTrack(ECineFaceSlot::BrowSad, 0.45f);
 		SoftTrack(ECineFaceSlot::MouthSmile, 0.90f);
 		SoftTrack(ECineFaceSlot::MouthFrown, 0.90f);
 		SoftTrack(ECineFaceSlot::MouthPress, 0.92f);
@@ -400,6 +403,24 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		SoftTrack(ECineFaceSlot::ExprAngry, 0.70f);
 		SoftTrack(ECineFaceSlot::ExprSad, 0.70f);
 		SoftTrack(ECineFaceSlot::ExprSurprised, 0.70f);
+
+		// Hard cap: outer-up + inner-up both high = tent poles into glasses/hats.
+		{
+			TArray<float>& Up = Timeline[(int32)ECineFaceSlot::BrowUp];
+			TArray<float>& Sad = Timeline[(int32)ECineFaceSlot::BrowSad];
+			const int32 N = Up.Num();
+			constexpr float MaxCombinedLift = 0.62f;
+			for (int32 f = 0; f < N; ++f)
+			{
+				const float Sum = Up[f] + Sad[f];
+				if (Sum > MaxCombinedLift && Sum > KINDA_SMALL_NUMBER)
+				{
+					const float S = MaxCombinedLift / Sum;
+					Up[f] *= S;
+					Sad[f] *= S;
+				}
+			}
+		}
 	}
 
 	// Peak of expression slots for diagnostics.
