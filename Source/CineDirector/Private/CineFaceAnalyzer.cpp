@@ -467,8 +467,8 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 			}
 		}
 
-		// Only tame bottom-lip / teeth morphs (lower-lip stretch in profile shots).
-		// Everything else stays at full curve scale so Mouth/Emotion sliders reach 1–2.
+		// Tame only the stretchy micros: bottom lip + brows (voyager native ARKit
+		// and void-transferred brows both peak hard at 1.0). Mouth vowels stay full.
 		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
 		{
 			for (FCineFaceCurveTarget& T : Profile.Slots[Slot])
@@ -477,6 +477,23 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 				if (Norm.Contains(TEXT("mouthlowerdown")) || Norm.Contains(TEXT("lowerlip")))
 				{
 					T.Scale *= 0.45f;
+					++Softened;
+				}
+				else if (Norm.Contains(TEXT("brow")))
+				{
+					// Outer/inner ups are the forehead spikes; down still needs punch for angry.
+					if (Norm.Contains(TEXT("inner")))
+					{
+						T.Scale *= 0.50f;
+					}
+					else if (Norm.Contains(TEXT("outerup")) || Norm.Contains(TEXT("outer")))
+					{
+						T.Scale *= 0.55f;
+					}
+					else
+					{
+						T.Scale *= 0.65f; // browDown*
+					}
 					++Softened;
 				}
 				// Drop bare Blink aliases when Blink_L/R exist.

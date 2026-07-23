@@ -384,9 +384,11 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 				V = FMath::Clamp(V * Mul, 0.0f, 1.0f);
 			}
 		};
-		SoftTrack(ECineFaceSlot::BrowUp, 0.82f);
-		SoftTrack(ECineFaceSlot::BrowDown, 0.85f);
-		SoftTrack(ECineFaceSlot::BrowSad, 0.85f);
+		// Brows: native ARKit (voyagers) + transferred voids still peak; keep
+		// more headroom than mouth so Emotion 1–2 is usable without spikes.
+		SoftTrack(ECineFaceSlot::BrowUp, 0.62f);
+		SoftTrack(ECineFaceSlot::BrowDown, 0.70f);
+		SoftTrack(ECineFaceSlot::BrowSad, 0.65f);
 		SoftTrack(ECineFaceSlot::MouthSmile, 0.90f);
 		SoftTrack(ECineFaceSlot::MouthFrown, 0.90f);
 		SoftTrack(ECineFaceSlot::MouthPress, 0.92f);
