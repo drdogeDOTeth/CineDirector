@@ -500,44 +500,98 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh)
 					}
 					++Softened;
 				}
-				// Drop bare Blink aliases when Blink_L/R exist.
-				if ((Norm == TEXT("blink") || (Norm == TEXT("blinkl") && !T.CurveName.ToString().Contains(TEXT("_")))
-						|| (Norm == TEXT("blinkr") && !T.CurveName.ToString().Contains(TEXT("_"))))
-					&& Profile.HasSlot(ECineFaceSlot::EyeBlink))
-				{
-					bool bHasUnderscore = false;
-					for (const FCineFaceCurveTarget& Other : Profile.Slots[(int32)ECineFaceSlot::EyeBlink])
-					{
-						if (Other.CurveName.ToString().Contains(TEXT("_")))
-						{
-							bHasUnderscore = true;
-							break;
-						}
-					}
-					if (bHasUnderscore)
-					{
-						T.Scale = 0.0f;
-						++Softened;
-					}
-				}
 			}
 		}
 
 		if (bArkitRich && bVrmMouth)
 		{
 			Profile.Notes.Add(FString::Printf(
-				TEXT("Void dual face: exclusive A/I/U/O lipsync (full strength) + ARKit brows/emotion. Stripped %d ARKit mouth curves from viseme slots, %d full-face expr; soft-scaled %d lower-lip targets."),
+				TEXT("Void dual face: exclusive A/I/U/O lipsync (full strength) + ARKit brows/emotion. Stripped %d ARKit mouth curves from viseme slots, %d full-face expr; soft-scaled %d stretchy targets."),
 				StrippedArkitMouth, StrippedExprs, Softened));
 		}
 		else if (bArkitRich)
 		{
 			Profile.Notes.Add(FString::Printf(
-				TEXT("Layered ARKit face (%d markers). Soft-scaled %d lower-lip targets only."),
+				TEXT("Layered ARKit face (%d markers). Soft-scaled %d stretchy targets."),
 				ArkitHits, Softened));
 		}
 		else
 		{
 			Profile.Notes.Add(TEXT("VRM/MMD-style exclusive vowel morphs — lipsync picks one shape per frame."));
+		}
+	}
+
+	// EyeBlink dedupe (all faces): voyagers ship eyeBlinkLeft/Right + blink_l/r + blink.
+	// Driving all five at auto-blink 1.0 stretches lids into the brow/glasses.
+	{
+		TArray<FCineFaceCurveTarget>& Blinks = Profile.Slots[(int32)ECineFaceSlot::EyeBlink];
+		if (Blinks.Num() > 2)
+		{
+			auto IsArkitBlink = [](const FString& Norm) -> bool
+			{
+				return Norm == TEXT("eyeblinkleft") || Norm == TEXT("eyeblinkright")
+					|| Norm == TEXT("eyeblinkl") || Norm == TEXT("eyeblinkr");
+			};
+			auto IsVrmPairBlink = [](const FString& Norm) -> bool
+			{
+				return Norm == TEXT("blinkl") || Norm == TEXT("blinkr")
+					|| Norm == TEXT("blinkleft") || Norm == TEXT("blinkright");
+			};
+			auto IsMonoBlink = [](const FString& Norm) -> bool
+			{
+				return Norm == TEXT("blink") || Norm == TEXT("eyeclose") || Norm == TEXT("eye_close")
+					|| Norm == TEXT("eyesclosed");
+			};
+
+			bool bHasArkit = false;
+			bool bHasVrmPair = false;
+			for (const FCineFaceCurveTarget& T : Blinks)
+			{
+				const FString N = NormalizeName(T.CurveName.ToString());
+				bHasArkit |= IsArkitBlink(N);
+				bHasVrmPair |= IsVrmPairBlink(N);
+			}
+
+			// Prefer a single L/R pair: ARKit eyeBlink* if present, else blink_l/r.
+			const bool bPreferArkit = bHasArkit;
+			int32 Kept = 0;
+			int32 Dropped = 0;
+			for (int32 i = Blinks.Num() - 1; i >= 0; --i)
+			{
+				const FString N = NormalizeName(Blinks[i].CurveName.ToString());
+				bool bKeep = false;
+				if (bPreferArkit)
+				{
+					bKeep = IsArkitBlink(N);
+				}
+				else if (bHasVrmPair)
+				{
+					bKeep = IsVrmPairBlink(N);
+				}
+				else
+				{
+					// Only mono left — keep one.
+					bKeep = (Kept == 0);
+				}
+
+				if (bKeep)
+				{
+					// Slight ease: even a clean L/R pair at 1.0 is hot on voyager lids.
+					Blinks[i].Scale *= 0.85f;
+					++Kept;
+				}
+				else
+				{
+					Blinks.RemoveAt(i);
+					++Dropped;
+				}
+			}
+			if (Dropped > 0)
+			{
+				Profile.Notes.Add(FString::Printf(
+					TEXT("EyeBlink: kept %d morph(s), dropped %d duplicate blink curves (was stacking into lid stretch)."),
+					Kept, Dropped));
+			}
 		}
 	}
 

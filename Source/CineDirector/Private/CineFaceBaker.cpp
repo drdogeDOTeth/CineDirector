@@ -718,6 +718,8 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		const bool bNervous = Request.EmotionText.ToLower().Contains(TEXT("scared"))
 			|| Request.EmotionText.ToLower().Contains(TEXT("afraid"))
 			|| Request.EmotionText.ToLower().Contains(TEXT("terrified"));
+		// Layered ARKit lids (voyagers) stretch if we slam 1.0 even on a clean L/R pair.
+		const float BlinkPeak = Request.Profile.bLayeredBlendshapes ? 0.82f : 1.0f;
 		FRandomStream Rand(NumFrames * 7 + 3);
 		float NextBlink = Rand.FRandRange(0.5f, 1.5f);
 		TArray<float>& Blink = Timeline[(int32)ECineFaceSlot::EyeBlink];
@@ -728,9 +730,9 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 			const int32 Up = FMath::Max(1, Fps / 8);
 			for (int32 i = 0; Start + i < NumFrames && i < Down + 1 + Up; ++i)
 			{
-				float Value = 1.0f;
-				if (i < Down) { Value = (float)(i + 1) / Down; }
-				else if (i > Down) { Value = 1.0f - (float)(i - Down) / Up; }
+				float Value = BlinkPeak;
+				if (i < Down) { Value = BlinkPeak * ((float)(i + 1) / Down); }
+				else if (i > Down) { Value = BlinkPeak * (1.0f - (float)(i - Down) / Up); }
 				Blink[Start + i] = FMath::Max(Blink[Start + i], FMath::Clamp(Value, 0.0f, 1.0f));
 			}
 			NextBlink += bNervous ? Rand.FRandRange(1.2f, 2.5f) : Rand.FRandRange(2.5f, 5.0f);
