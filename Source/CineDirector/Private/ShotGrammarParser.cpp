@@ -346,17 +346,34 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 	}
 
 	// ---- Framing -------------------------------------------------------------
+	// "Slight close-up" is intentionally softer than a true CU (reads as MCU /
+	// chest-up). Check before plain "close-up" so "slight" isn't lost.
 	if (ContainsAny(Text, { TEXT("extreme close"), TEXT("extreme close-up"), TEXT("ecu") }))
 	{
 		OutSegment.ShotSize = ECineShotSize::ExtremeCloseUp;
 	}
-	else if (ContainsAny(Text, { TEXT("medium close"), TEXT("medium close-up") }))
+	else if (ContainsAny(Text, {
+		TEXT("slight close-up"), TEXT("slight close up"), TEXT("slight closeup"),
+		TEXT("slightly close-up"), TEXT("slightly close up"), TEXT("slightly closeup"),
+		TEXT("loose close-up"), TEXT("loose close up"), TEXT("soft close-up"), TEXT("soft close up"),
+		TEXT("almost close-up"), TEXT("near close-up"), TEXT("gentle close-up") }))
+	{
+		OutSegment.ShotSize = ECineShotSize::MediumCloseUp;
+		OutSegment.ParseNotes.Add(TEXT("Slight close-up → medium close-up framing (chest-up, not face-tight)."));
+	}
+	else if (ContainsAny(Text, { TEXT("medium close"), TEXT("medium close-up"), TEXT("medium close up"), TEXT("mcu") }))
 	{
 		OutSegment.ShotSize = ECineShotSize::MediumCloseUp;
 	}
 	else if (ContainsAny(Text, { TEXT("close-up"), TEXT("close up"), TEXT("closeup") }))
 	{
 		OutSegment.ShotSize = ECineShotSize::CloseUp;
+	}
+	// "slight medium" / "loose medium" → a touch wider than a normal medium.
+	else if (ContainsAny(Text, { TEXT("slight medium"), TEXT("slightly medium"), TEXT("loose medium"), TEXT("soft medium") }))
+	{
+		OutSegment.ShotSize = ECineShotSize::Wide;
+		OutSegment.ParseNotes.Add(TEXT("Slight medium → wide-medium framing."));
 	}
 	else if (ContainsAny(Text, { TEXT("extreme wide"), TEXT("very wide"), TEXT("establishing") }))
 	{
@@ -432,7 +449,7 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 	// ---- Look-at / tracking target -----------------------------------------------
 	// "orbit around the tower looking at the knight" aims the lens at a different
 	// actor than the one the move pivots on. "track/follow <actor>" also locks
-	// autofocus onto it.
+	// autofocus onto it (and keeps re-aiming during the move).
 	{
 		struct FLookPhrase
 		{
@@ -444,15 +461,27 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 			{ TEXT(" looking at "), false },
 			{ TEXT(" look at "), false },
 			{ TEXT(" looks at "), false },
+			{ TEXT(" keep looking at "), false },
+			{ TEXT(" gazing at "), false },
+			{ TEXT(" gaze at "), false },
 			{ TEXT(" aimed at "), false },
 			{ TEXT(" aiming at "), false },
 			{ TEXT(" aim at "), false },
 			{ TEXT(" facing "), false },
+			{ TEXT(" pointed at "), false },
+			{ TEXT(" pointing at "), false },
+			{ TEXT(" locked on "), true },
+			{ TEXT(" lock on "), true },
+			{ TEXT(" lock onto "), true },
 			{ TEXT(" watching "), true },
 			{ TEXT(" tracking "), true },
 			{ TEXT(" track "), true },
 			{ TEXT(" following "), true },
+			{ TEXT(" follow shot of "), true },
 			{ TEXT(" follow "), true },
+			{ TEXT(" stays on "), true },
+			{ TEXT(" stay on "), true },
+			{ TEXT(" keep on "), true },
 		};
 
 		for (const FLookPhrase& Look : LookPhrases)
@@ -472,6 +501,7 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 
 			OutSegment.LookAtActor = LookTarget->Actor;
 			OutSegment.LookAtLabel = LookTarget->Label;
+			OutSegment.bLookAtTarget = true;
 			if (Look.bAlsoTrackFocus)
 			{
 				OutSegment.bTrackFocus = true;
@@ -485,6 +515,23 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 			{
 				OutSegment.TargetActor = MoveTarget->Actor;
 				OutSegment.TargetLabel = MoveTarget->Label;
+			}
+			else if (!OutSegment.TargetActor.IsValid())
+			{
+				// "follow the Knight" with no earlier subject: the look target is the subject.
+				OutSegment.TargetActor = LookTarget->Actor;
+				OutSegment.TargetLabel = LookTarget->Label;
+			}
+
+			// Ride the subject when this is a real follow/track, or when the move
+			// subject and look-at subject are the same character (gaze / follow me).
+			// "orbit around A looking at B" keeps B as aim-only so the orbit pivot stays A.
+			const bool bSameSubject = OutSegment.TargetActor.IsValid()
+				&& OutSegment.TargetActor == LookTarget->Actor;
+			if (Look.bAlsoTrackFocus || bSameSubject)
+			{
+				OutSegment.bFollowSubjectPosition = true;
+				OutSegment.bTrackFocus = true;
 			}
 			break;
 		}
@@ -638,12 +685,67 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 		{
 			OutSegment.ParseNotes.Add(TEXT("Rack focus requested but couldn't resolve both actors (\"rack focus from <actor> to <actor>\")."));
 		}
+		OutSegment.bTrackFocus = false;
+		OutSegment.bDeepFocus = false;
+		OutSegment.bFixedFocus = false;
 		bRecognizedAnything = true;
 	}
-	else if (ContainsAny(Text, { TEXT("focus on"), TEXT("track focus"), TEXT("tracking focus"), TEXT("follow focus"), TEXT("keep focus"), TEXT("stay focused") }))
+	else if (ContainsAny(Text, { TEXT("deep focus"), TEXT("deep depth"), TEXT("everything in focus"), TEXT("infinite focus"), TEXT("no depth of field"), TEXT("disable dof"), TEXT("no dof") }))
+	{
+		// Stage stays sharp — don't glue DOF to a single subject.
+		OutSegment.bDeepFocus = true;
+		OutSegment.bTrackFocus = false;
+		OutSegment.bFixedFocus = false;
+		if (OutSegment.Aperture <= 0.0f)
+		{
+			OutSegment.Aperture = 11.0f;
+		}
+		bRecognizedAnything = true;
+	}
+	else if (ContainsAny(Text, { TEXT("fixed focus"), TEXT("locked focus"), TEXT("lock focus"), TEXT("no autofocus"), TEXT("no auto focus"), TEXT("manual focus only") }))
+	{
+		// One focus distance at setup; do not re-pull during the move.
+		OutSegment.bFixedFocus = true;
+		OutSegment.bTrackFocus = false;
+		OutSegment.bDeepFocus = false;
+		bRecognizedAnything = true;
+	}
+	else if (ContainsAny(Text, {
+		TEXT("focus on"), TEXT("track focus"), TEXT("tracking focus"), TEXT("follow focus"),
+		TEXT("keep focus"), TEXT("stay focused"), TEXT("autofocus"), TEXT("auto focus"),
+		TEXT("auto-focus"), TEXT("pull focus to"), TEXT("refocus on"), TEXT("re-focus on") }))
 	{
 		OutSegment.bTrackFocus = true;
+		OutSegment.bDeepFocus = false;
+		OutSegment.bFixedFocus = false;
 		bRecognizedAnything = true;
+
+		// "focus on the door" / "refocus on the knight" — prefer that actor as the
+		// look-at / focus subject when we can resolve a name after the phrase.
+		static const TCHAR* FocusOnPhrases[] = {
+			TEXT(" focus on "), TEXT(" autofocus on "), TEXT(" auto focus on "),
+			TEXT(" pull focus to "), TEXT(" refocus on "), TEXT(" re-focus on "),
+			TEXT(" keep focus on "), TEXT(" stay focused on ")
+		};
+		for (const TCHAR* Phrase : FocusOnPhrases)
+		{
+			const int32 PhraseIdx = Text.Find(Phrase);
+			if (PhraseIdx == INDEX_NONE)
+			{
+				continue;
+			}
+			if (const FCineSceneActorInfo* FocusTarget = ResolveTarget(Text.Mid(PhraseIdx + FCString::Strlen(Phrase)), Scene))
+			{
+				OutSegment.LookAtActor = FocusTarget->Actor;
+				OutSegment.LookAtLabel = FocusTarget->Label;
+				if (!OutSegment.TargetActor.IsValid())
+				{
+					OutSegment.TargetActor = FocusTarget->Actor;
+					OutSegment.TargetLabel = FocusTarget->Label;
+				}
+			}
+			break;
+		}
 	}
 	else if (OutSegment.TargetActor.IsValid() && OutSegment.Aperture > 0.0f && OutSegment.Aperture <= 2.8f)
 	{
@@ -651,10 +753,322 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 		OutSegment.bTrackFocus = true;
 	}
 
+	// ---- Shot style kits ----------------------------------------------------------
+	// Named looks set lens / PP / grade / filmback defaults. Individual effect words
+	// below can still push a single knob higher. Kits only fill empty slots so a
+	// later "85mm" or "no grain" intent isn't fought by the pack.
+	{
+		auto FillIfZero = [](float& Slot, float Value)
+		{
+			if (Slot <= 0.0f && Value > 0.0f)
+			{
+				Slot = Value;
+			}
+		};
+		auto FillIfEmptyFocal = [&](float Mm)
+		{
+			if (OutSegment.FocalLengthMm <= 0.0f)
+			{
+				OutSegment.FocalLengthMm = Mm;
+			}
+		};
+		auto FillIfEmptyAperture = [&](float F)
+		{
+			if (OutSegment.Aperture <= 0.0f)
+			{
+				OutSegment.Aperture = F;
+			}
+		};
+		auto SetLook = [&](float Sat, float Contrast, float Gain, float TempK, float Tint, FLinearColor SceneTint)
+		{
+			OutSegment.bApplyLookGrade = true;
+			OutSegment.LookSaturation = Sat;
+			OutSegment.LookContrast = Contrast;
+			OutSegment.LookGain = Gain;
+			OutSegment.WhiteTempKelvin = TempK;
+			OutSegment.WhiteTint = Tint;
+			OutSegment.SceneColorTint = SceneTint;
+		};
+		auto SetScopeFilmback = [&]()
+		{
+			// ~2.39:1 Super-35 scope plate.
+			if (OutSegment.FilmbackSensorHeightMm <= 0.0f)
+			{
+				OutSegment.FilmbackSensorWidthMm = 23.76f;
+				OutSegment.FilmbackSensorHeightMm = 9.94f;
+			}
+		};
+		auto SetImaxFilmback = [&]()
+		{
+			// Taller large-format-ish plate (~1.43–1.90 feel via taller sensor).
+			if (OutSegment.FilmbackSensorHeightMm <= 0.0f)
+			{
+				OutSegment.FilmbackSensorWidthMm = 70.0f;
+				OutSegment.FilmbackSensorHeightMm = 46.0f;
+			}
+		};
+		auto TagStyle = [&](const TCHAR* Name)
+		{
+			if (OutSegment.StyleKitName.IsEmpty())
+			{
+				OutSegment.StyleKitName = Name;
+			}
+			else if (!OutSegment.StyleKitName.Contains(Name))
+			{
+				OutSegment.StyleKitName += FString(TEXT(" + ")) + Name;
+			}
+			bRecognizedAnything = true;
+		};
+
+		const bool bBodycam = ContainsAny(Text, {
+			TEXT("bodycam"), TEXT("body cam"), TEXT("body-cam"), TEXT("go-pro"), TEXT("gopro"),
+			TEXT("action cam"), TEXT("helmet cam"), TEXT("pov cam") });
+		const bool bCctv = ContainsAny(Text, {
+			TEXT("cctv"), TEXT("security cam"), TEXT("surveillance"), TEXT("security camera"),
+			TEXT("dashcam"), TEXT("dash cam") });
+		const bool bFoundFootage = bBodycam || bCctv || ContainsAny(Text, {
+			TEXT("found footage"), TEXT("found-footage"), TEXT("camcorder"), TEXT("recovered tape") });
+		const bool bCrtVhs = ContainsAny(Text, {
+			TEXT("crt"), TEXT("scanline"), TEXT("scan line"), TEXT("scanlines"), TEXT("vhs"),
+			TEXT("old tv"), TEXT("tube tv"), TEXT("raster"), TEXT("retro tv") });
+		const bool bNolan = ContainsAny(Text, {
+			TEXT("nolan"), TEXT("christopher nolan"), TEXT("inception style"), TEXT("dunkirk style"),
+			TEXT("imax style"), TEXT("imax look"), TEXT("tenet style") });
+		const bool bHorror = ContainsAny(Text, {
+			TEXT("horror"), TEXT("scary"), TEXT("creepy"), TEXT("haunted"), TEXT("nightmare"), TEXT("terror") });
+		const bool bAction = ContainsAny(Text, {
+			TEXT("action style"), TEXT("action movie"), TEXT("action look"), TEXT("blockbuster"),
+			TEXT("set piece"), TEXT("explosive style"), TEXT("bayhem") })
+			|| (ContainsPhrase(Text, TEXT("action")) && !ContainsAny(Text, { TEXT("action cam") }));
+		const bool bCinematic = ContainsAny(Text, {
+			TEXT("cinematic"), TEXT("cinemascope"), TEXT("letterbox"), TEXT("anamorphic"),
+			TEXT("scope look"), TEXT("film look"), TEXT("movie look") });
+		const bool bNoir = ContainsAny(Text, { TEXT("noir"), TEXT("neo-noir"), TEXT("neo noir") })
+			&& !ContainsAny(Text, { TEXT("neon") });
+		const bool bThriller = ContainsPhrase(Text, TEXT("thriller"));
+		const bool bRomance = ContainsAny(Text, { TEXT("romance"), TEXT("romantic"), TEXT("dreamy look"), TEXT("soft romantic") });
+		const bool bCyberpunk = ContainsAny(Text, { TEXT("cyberpunk"), TEXT("neon noir"), TEXT("blade runner") });
+		const bool bDoc = ContainsAny(Text, { TEXT("documentary"), TEXT("doc style"), TEXT("run and gun"), TEXT("run-and-gun") });
+		const bool bMusicVideo = ContainsAny(Text, { TEXT("music video"), TEXT("music-video"), TEXT("mv style"), TEXT("pop video") });
+		const bool bWestern = ContainsAny(Text, { TEXT("western"), TEXT("spaghetti western"), TEXT("desert epic") });
+		const bool bIndie = ContainsAny(Text, { TEXT("indie film"), TEXT("indie look"), TEXT("mumblecore"), TEXT("a24") });
+
+		if (bFoundFootage || bBodycam || bCctv)
+		{
+			FillIfEmptyFocal(bBodycam ? 16.0f : 18.0f);
+			FillIfEmptyAperture(5.6f); // deeper so whole messy frame stays readable
+			if (OutSegment.HandheldIntensity <= 0.0f)
+			{
+				OutSegment.HandheldIntensity = bBodycam ? 1.35f : 0.95f;
+			}
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.65f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.75f);
+			FillIfZero(OutSegment.ChromaticAberrationIntensity, 2.5f);
+			if (OutSegment.DutchAngleDeg == 0.0f && bBodycam)
+			{
+				OutSegment.DutchAngleDeg = 4.0f;
+			}
+			SetLook(0.55f, 1.15f, 0.92f, 5200.0f, 0.12f, FLinearColor(0.85f, 1.0f, 0.88f));
+			OutSegment.MotionBlurAmount = 0.55f;
+			OutSegment.bFixedFocus = OutSegment.bFixedFocus || bCctv; // security cams rarely rack
+			TagStyle(bBodycam ? TEXT("bodycam") : (bCctv ? TEXT("cctv") : TEXT("found footage")));
+		}
+
+		if (bCrtVhs)
+		{
+			FillIfEmptyFocal(28.0f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.75f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.55f);
+			FillIfZero(OutSegment.ChromaticAberrationIntensity, 3.5f);
+			FillIfZero(OutSegment.BloomIntensity, 1.2f);
+			if (OutSegment.HandheldIntensity <= 0.0f)
+			{
+				OutSegment.HandheldIntensity = 0.35f;
+			}
+			// Green/magenta CRT plate — scanlines approximated via grain + fringe.
+			SetLook(0.7f, 1.2f, 0.95f, 7000.0f, 0.18f, FLinearColor(0.9f, 1.05f, 0.92f));
+			TagStyle(TEXT("CRT/VHS"));
+		}
+
+		if (bNolan)
+		{
+			FillIfEmptyFocal(40.0f);
+			FillIfEmptyAperture(8.0f); // deepish large-format readability without soft bokeh
+			// f/8 already reads deep. Only force non-tracking deep focus when there is
+			// no named subject — otherwise keep AF glued so "nolan + orbit around X"
+			// still pulls focus on X (kits used to wipe bTrackFocus and skip the default AF pass).
+			if (!OutSegment.TargetActor.IsValid() && !OutSegment.LookAtActor.IsValid() && !OutSegment.bTrackFocus)
+			{
+				OutSegment.bDeepFocus = true;
+				OutSegment.bTrackFocus = false;
+			}
+			if (OutSegment.HandheldIntensity <= 0.0f)
+			{
+				OutSegment.HandheldIntensity = 0.0f; // locked-off IMAX energy
+			}
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.18f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.25f);
+			SetLook(0.78f, 1.28f, 0.94f, 6200.0f, -0.04f, FLinearColor(0.95f, 0.98f, 1.05f));
+			SetImaxFilmback();
+			OutSegment.MotionBlurAmount = 0.35f;
+			TagStyle(TEXT("Nolan/IMAX"));
+		}
+
+		if (bHorror && !bFoundFootage)
+		{
+			FillIfEmptyFocal(35.0f);
+			FillIfEmptyAperture(1.8f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.55f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.8f);
+			FillIfZero(OutSegment.ChromaticAberrationIntensity, 1.5f);
+			if (OutSegment.DutchAngleDeg == 0.0f)
+			{
+				OutSegment.DutchAngleDeg = 8.0f;
+			}
+			if (OutSegment.HandheldIntensity <= 0.0f)
+			{
+				OutSegment.HandheldIntensity = 0.35f;
+			}
+			SetLook(0.5f, 1.3f, 0.88f, 5600.0f, 0.08f, FLinearColor(0.92f, 0.95f, 1.05f));
+			if (OutSegment.TimeOfDay == ECineTimeOfDay::Unchanged)
+			{
+				// Don't force night — only lean cool; user can still say "at night".
+			}
+			TagStyle(TEXT("horror"));
+		}
+
+		if (bAction && !bBodycam)
+		{
+			FillIfEmptyFocal(28.0f);
+			FillIfEmptyAperture(2.8f);
+			if (OutSegment.HandheldIntensity <= 0.0f)
+			{
+				OutSegment.HandheldIntensity = 0.7f;
+			}
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.22f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.35f);
+			FillIfZero(OutSegment.LensFlareIntensity, 1.5f);
+			FillIfZero(OutSegment.BloomIntensity, 1.1f);
+			SetLook(1.08f, 1.32f, 0.98f, 6000.0f, 0.0f, FLinearColor(1.0f, 0.98f, 0.95f));
+			OutSegment.MotionBlurAmount = 0.65f;
+			TagStyle(TEXT("action"));
+		}
+
+		if (bCinematic && !bNolan)
+		{
+			FillIfEmptyFocal(50.0f);
+			FillIfEmptyAperture(2.0f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.2f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.35f);
+			SetLook(0.9f, 1.15f, 0.98f, 6000.0f, 0.0f, FLinearColor::White);
+			SetScopeFilmback();
+			TagStyle(TEXT("cinematic"));
+		}
+
+		if (bNoir)
+		{
+			FillIfEmptyFocal(50.0f);
+			FillIfEmptyAperture(2.8f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.45f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.85f);
+			SetLook(0.15f, 1.4f, 0.9f, 6500.0f, 0.0f, FLinearColor(0.95f, 0.95f, 1.0f));
+			TagStyle(TEXT("noir"));
+		}
+
+		if (bThriller && !bHorror)
+		{
+			FillIfEmptyFocal(40.0f);
+			FillIfEmptyAperture(2.4f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.55f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.28f);
+			SetLook(0.72f, 1.25f, 0.94f, 5800.0f, 0.05f, FLinearColor(0.95f, 0.97f, 1.05f));
+			TagStyle(TEXT("thriller"));
+		}
+
+		if (bRomance)
+		{
+			FillIfEmptyFocal(65.0f);
+			FillIfEmptyAperture(1.6f);
+			FillIfZero(OutSegment.BloomIntensity, 2.0f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.3f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.12f);
+			SetLook(1.12f, 1.05f, 1.04f, 5600.0f, -0.05f, FLinearColor(1.05f, 0.98f, 0.95f));
+			TagStyle(TEXT("romance"));
+		}
+
+		if (bCyberpunk)
+		{
+			FillIfEmptyFocal(35.0f);
+			FillIfEmptyAperture(1.8f);
+			FillIfZero(OutSegment.BloomIntensity, 2.5f);
+			FillIfZero(OutSegment.ChromaticAberrationIntensity, 2.0f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.5f);
+			FillIfZero(OutSegment.LensFlareIntensity, 1.2f);
+			SetLook(1.35f, 1.3f, 0.95f, 7200.0f, 0.1f, FLinearColor(1.05f, 0.9f, 1.15f));
+			if (OutSegment.TimeOfDay == ECineTimeOfDay::Unchanged)
+			{
+				OutSegment.TimeOfDay = ECineTimeOfDay::Night;
+			}
+			TagStyle(TEXT("cyberpunk"));
+		}
+
+		if (bDoc && !bFoundFootage)
+		{
+			FillIfEmptyFocal(35.0f);
+			FillIfEmptyAperture(4.0f);
+			if (OutSegment.HandheldIntensity <= 0.0f)
+			{
+				OutSegment.HandheldIntensity = 0.55f;
+			}
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.25f);
+			SetLook(0.95f, 1.05f, 1.0f, 5600.0f, 0.0f, FLinearColor::White);
+			TagStyle(TEXT("documentary"));
+		}
+
+		if (bMusicVideo)
+		{
+			FillIfEmptyFocal(28.0f);
+			FillIfZero(OutSegment.BloomIntensity, 2.0f);
+			FillIfZero(OutSegment.ChromaticAberrationIntensity, 2.5f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.3f);
+			if (OutSegment.HandheldIntensity <= 0.0f)
+			{
+				OutSegment.HandheldIntensity = 0.45f;
+			}
+			SetLook(1.3f, 1.2f, 1.02f, 6500.0f, 0.0f, FLinearColor::White);
+			TagStyle(TEXT("music video"));
+		}
+
+		if (bWestern)
+		{
+			FillIfEmptyFocal(35.0f);
+			FillIfEmptyAperture(5.6f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.35f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.4f);
+			SetLook(0.95f, 1.18f, 1.02f, 4800.0f, -0.08f, FLinearColor(1.08f, 0.98f, 0.85f));
+			if (OutSegment.TimeOfDay == ECineTimeOfDay::Unchanged)
+			{
+				OutSegment.TimeOfDay = ECineTimeOfDay::GoldenHour;
+			}
+			SetScopeFilmback();
+			TagStyle(TEXT("western"));
+		}
+
+		if (bIndie)
+		{
+			FillIfEmptyFocal(40.0f);
+			FillIfEmptyAperture(2.0f);
+			FillIfZero(OutSegment.FilmGrainIntensity, 0.35f);
+			FillIfZero(OutSegment.VignetteIntensity, 0.4f);
+			SetLook(0.85f, 1.1f, 0.97f, 5400.0f, 0.04f, FLinearColor(1.02f, 0.98f, 0.95f));
+			TagStyle(TEXT("indie"));
+		}
+	}
+
 	// ---- Effects ------------------------------------------------------------------
 	if (ContainsAny(Text, { TEXT("handheld"), TEXT("hand-held"), TEXT("hand held"), TEXT("shaky"), TEXT("shaking"), TEXT("unsteady"), TEXT("documentary style") }))
 	{
-		if (ContainsAny(Text, { TEXT("slightly"), TEXT("subtle"), TEXT("subtly"), TEXT("a little"), TEXT("gentle") }))
+		if (ContainsAny(Text, { TEXT("slightly"), TEXT("slight"), TEXT("subtle"), TEXT("subtly"), TEXT("a little"), TEXT("gentle") }))
 		{
 			OutSegment.HandheldIntensity = 0.4f;
 		}
@@ -662,51 +1076,74 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 		{
 			OutSegment.HandheldIntensity = 1.5f;
 		}
-		else
+		else if (OutSegment.HandheldIntensity <= 0.0f)
 		{
 			OutSegment.HandheldIntensity = 0.8f;
+		}
+		// If a style kit already set shake, plain "handheld" without intensity
+		// words leaves the kit value; with intensity words we override above.
+		else if (!ContainsAny(Text, { TEXT("slightly"), TEXT("slight"), TEXT("subtle"), TEXT("very"), TEXT("heavy"), TEXT("extreme") }))
+		{
+			OutSegment.HandheldIntensity = FMath::Max(OutSegment.HandheldIntensity, 0.8f);
 		}
 		bRecognizedAnything = true;
 	}
 
 	if (ContainsAny(Text, { TEXT("dutch"), TEXT("canted"), TEXT("dutch angle"), TEXT("canted angle") }))
 	{
-		OutSegment.DutchAngleDeg = 12.0f;
+		if (ContainsAny(Text, { TEXT("slight"), TEXT("slightly"), TEXT("subtle"), TEXT("gentle") }))
+		{
+			OutSegment.DutchAngleDeg = 6.0f;
+		}
+		else if (ContainsAny(Text, { TEXT("heavy"), TEXT("extreme"), TEXT("hard"), TEXT("strong") }))
+		{
+			OutSegment.DutchAngleDeg = 22.0f;
+		}
+		else
+		{
+			OutSegment.DutchAngleDeg = 12.0f;
+		}
 		bRecognizedAnything = true;
 	}
 
 	// ---- Post-process effects ----------------------------------------------------
 	// One heaviness reading per clause; it scales every effect mentioned in it.
+	// "slight" next to grain/vignette etc. — also works as "slight film grain".
 	const bool bSubtleFx = ContainsAny(Text, { TEXT("slight"), TEXT("slightly"), TEXT("subtle"), TEXT("subtly"), TEXT("a little"), TEXT("light"), TEXT("gentle") });
 	const bool bHeavyFx = ContainsAny(Text, { TEXT("heavy"), TEXT("heavily"), TEXT("strong"), TEXT("intense"), TEXT("extreme"), TEXT("very") });
 	auto FxIntensity = [bSubtleFx, bHeavyFx](float Subtle, float Normal, float Heavy)
 	{
 		return bHeavyFx ? Heavy : (bSubtleFx ? Subtle : Normal);
 	};
+	auto BumpFx = [](float& Slot, float Value)
+	{
+		// Explicit effect words win over (or raise) style-kit defaults.
+		Slot = FMath::Max(Slot, Value);
+	};
 
 	if (ContainsAny(Text, { TEXT("film grain"), TEXT("grainy"), TEXT("grain") }))
 	{
-		OutSegment.FilmGrainIntensity = FxIntensity(0.15f, 0.4f, 0.8f);
+		BumpFx(OutSegment.FilmGrainIntensity, FxIntensity(0.15f, 0.4f, 0.8f));
 		bRecognizedAnything = true;
 	}
 	if (ContainsAny(Text, { TEXT("vignette"), TEXT("vignetting") }))
 	{
-		OutSegment.VignetteIntensity = FxIntensity(0.3f, 0.6f, 0.9f);
+		BumpFx(OutSegment.VignetteIntensity, FxIntensity(0.3f, 0.6f, 0.9f));
 		bRecognizedAnything = true;
 	}
 	if (ContainsAny(Text, { TEXT("chromatic aberration"), TEXT("chromatic"), TEXT("color fringing"), TEXT("fringing") }))
 	{
-		OutSegment.ChromaticAberrationIntensity = FxIntensity(1.0f, 2.0f, 4.0f);
+		BumpFx(OutSegment.ChromaticAberrationIntensity, FxIntensity(1.0f, 2.0f, 4.0f));
 		bRecognizedAnything = true;
 	}
 	if (ContainsAny(Text, { TEXT("bloom"), TEXT("glow"), TEXT("glowing") }))
 	{
-		OutSegment.BloomIntensity = FxIntensity(1.0f, 1.5f, 3.0f);
+		BumpFx(OutSegment.BloomIntensity, FxIntensity(1.0f, 1.5f, 3.0f));
 		bRecognizedAnything = true;
 	}
 	if (ContainsAny(Text, { TEXT("lens flare"), TEXT("lens flares"), TEXT("flare"), TEXT("flares") }))
 	{
-		OutSegment.LensFlareIntensity = FxIntensity(0.5f, 2.0f, 4.0f);
+		BumpFx(OutSegment.LensFlareIntensity, FxIntensity(0.5f, 2.0f, 4.0f));
 		bRecognizedAnything = true;
 	}
 
@@ -926,6 +1363,29 @@ bool FShotGrammarParser::BuildShotPlan(const FString& Description, const FCineSc
 		}
 	}
 
+	// ---- Default autofocus + subject follow -----------------------------------
+	// Any shot with a subject keeps DOF on that subject unless the user asked for
+	// deep/fixed focus or a rack. Stops soft focus after dollies/orbits/cut-tos.
+	// Also default position-follow so continuous takes AND multi-cuts re-bake the
+	// camera onto the live body performance (not a frozen world look-at).
+	for (FCineShotSegment& Segment : OutPlan.Segments)
+	{
+		if (Segment.TargetActor.IsValid() || Segment.LookAtActor.IsValid())
+		{
+			Segment.bLookAtTarget = true;
+			Segment.bFollowSubjectPosition = true;
+		}
+
+		if (Segment.bDeepFocus || Segment.bFixedFocus || Segment.RackFocusToActor.IsValid())
+		{
+			continue;
+		}
+		if (Segment.LookAtActor.IsValid() || Segment.TargetActor.IsValid() || Segment.bTrackFocus)
+		{
+			Segment.bTrackFocus = true;
+		}
+	}
+
 	// "one take" / "continuous" chains the whole description onto a single camera.
 	const FString LowerDescription = Description.ToLower();
 	if (CineDirectorGrammar::ContainsAny(LowerDescription,
@@ -949,18 +1409,26 @@ FText FShotGrammarParser::GetVocabularyHelpText()
 		"            flyover / drone shot, static / locked\n"
 		"  Target:   any actor label from the outliner (\"around the Knight\", \"on the tower\");\n"
 		"            \"it\" / \"them\" refer back to the previous clause's subject\n"
-		"  Framing:  extreme close-up, close-up, medium, wide, establishing\n"
+		"  Framing:  extreme close-up, slight close-up (softer MCU), close-up, medium close-up,\n"
+		"            medium, wide, establishing\n"
 		"  Angle:    low angle, high angle, overhead / bird's eye, from behind, from the left,\n"
 		"            over the shoulder — plain sides are as seen from your current viewport\n"
 		"            (\"front\" = the side you're looking at right now); possessive sides\n"
 		"            (\"its left\", \"their back\", \"behind it\") use the actor's own facing\n"
-		"  Aim:      looking at <actor> (aim the lens at one actor while the move pivots\n"
-		"            on another), track / follow <actor> (aim + keep autofocus locked)\n"
+		"  Aim:      looking at / gaze at / aimed at <actor> (lens points there while the\n"
+		"            move pivots on another), track / follow / lock on / stay on <actor>\n"
+		"            (aim + keep autofocus locked and re-pulling as the camera moves)\n"
 		"  Lens:     \"50mm\", wide-angle, portrait, telephoto; aperture as \"f/1.8\",\n"
 		"            shallow focus, deep focus\n"
-		"  Focus:    focus on <actor>, rack focus from <actor> to <actor>\n"
-		"  Effects:  handheld / shaky (slightly, very), dutch angle,\n"
+		"  Focus:    autofocus is ON by default for any named subject; also:\n"
+		"            focus on / refocus on <actor>, rack focus from A to B,\n"
+		"            deep focus / infinite focus, fixed focus / no autofocus\n"
+		"  Style:    cinematic, action, horror, thriller, noir, Nolan / IMAX, bodycam, cctv,\n"
+		"            found footage, CRT / VHS / scanlines, cyberpunk, romance, documentary,\n"
+		"            music video, western, indie — packs lens, DOF, handheld, grade, filmback\n"
+		"  Effects:  handheld / shaky (slight, very), dutch (slight / heavy),\n"
 		"            film grain, vignette, chromatic aberration, bloom, lens flares\n"
+		"            (prefix slight / heavy to soften or punch any effect)\n"
 		"  Lighting: at dawn / morning / noon / afternoon / golden hour / sunset / dusk /\n"
 		"            night / midnight / overcast — keys the level's sun per shot;\n"
 		"            fog (light, heavy, \"no fog\"), god rays, volumetric fog.\n"

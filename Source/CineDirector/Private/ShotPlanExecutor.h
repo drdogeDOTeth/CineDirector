@@ -23,9 +23,10 @@ struct FCineExecuteResult
  * segment, binds it into the Level Sequence currently open in Sequencer, and
  * authors transform keys, focal-length / focus-distance tracks and camera cuts.
  *
- * New shots are appended after the last existing camera cut, so running twice
- * extends the sequence instead of stomping it. Everything happens inside one
- * scoped transaction and is undoable with a single Ctrl+Z.
+ * Re-running replaces prior CineDirector cameras / camera-cut sections (labels
+ * starting with "CineDirector Shot" / "CineDirector Take") and starts again at
+ * the sequence playback start so multi-cut and continuous always match the
+ * latest prompt. Everything happens inside one scoped transaction (Ctrl+Z).
  */
 class FShotPlanExecutor
 {

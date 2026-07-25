@@ -139,11 +139,33 @@ struct FCineShotSegment
 	/** 0 = use default (f/2.8). */
 	float Aperture = 0.0f;
 
-	/** Keep autofocus locked on the target actor for the whole shot. */
+	/**
+	 * Keep depth of field locked on the look-at / target actor.
+	 * Defaulted on by the parser whenever a subject is present (unless deep/fixed focus).
+	 */
 	bool bTrackFocus = false;
+
+	/**
+	 * Deep / near-infinite focus. Skips subject tracking and holds a long manual
+	 * focus distance so the whole stage stays sharp.
+	 */
+	bool bDeepFocus = false;
+
+	/**
+	 * Hold one fixed manual focus distance from setup (does not re-pull as the
+	 * camera moves or the cut lands on a new subject). Explicit "fixed focus".
+	 */
+	bool bFixedFocus = false;
 
 	/** Aim the camera at the target throughout the move (orbits/trucks stay framed). */
 	bool bLookAtTarget = true;
+
+	/**
+	 * Explicit "follow / track / lock on" language: keep the camera's offset to the
+	 * subject in the subject's space and re-bake position every sample so the cam
+	 * travels with them (not just re-aiming at a fixed world point).
+	 */
+	bool bFollowSubjectPosition = false;
 
 	/** 0 = locked off. ~0.4 subtle, ~0.8 handheld, ~1.5 very shaky. Baked as transform noise keys. */
 	float HandheldIntensity = 0.0f;
@@ -157,6 +179,36 @@ struct FCineShotSegment
 	float ChromaticAberrationIntensity = 0.0f;
 	float BloomIntensity = 0.0f;
 	float LensFlareIntensity = 0.0f;
+
+	/**
+	 * Color grade / look pack from style words ("horror", "Nolan", "bodycam", …).
+	 * Only applied when bApplyLookGrade is true so clean shots stay untouched.
+	 */
+	bool bApplyLookGrade = false;
+	/** Global saturation multiplier (1 = neutral, <1 desat, >1 punchy). */
+	float LookSaturation = 1.0f;
+	/** Global contrast multiplier (1 = neutral). */
+	float LookContrast = 1.0f;
+	/** Global gain / exposure-ish lift (1 = neutral, 0.9 darker, 1.1 brighter). */
+	float LookGain = 1.0f;
+	/** White balance Kelvin; 0 = leave camera default (~6500). */
+	float WhiteTempKelvin = 0.0f;
+	/** Magenta↔green white tint (-1..1 style; 0 = none). */
+	float WhiteTint = 0.0f;
+	/** Multiplies scene color (tints the whole plate). White = no tint. */
+	FLinearColor SceneColorTint = FLinearColor::White;
+	/** Motion blur amount 0..1; negative = leave default. */
+	float MotionBlurAmount = -1.0f;
+
+	/**
+	 * Optional filmback override for scope / IMAX-ish framing.
+	 * SensorHeight 0 = leave the cine camera default filmback.
+	 */
+	float FilmbackSensorWidthMm = 0.0f;
+	float FilmbackSensorHeightMm = 0.0f;
+
+	/** Human label for the style kit applied (shown in shot notes). */
+	FString StyleKitName;
 
 	/** Sun/sky mood for this shot, keyed on the level's directional light per cut. */
 	ECineTimeOfDay TimeOfDay = ECineTimeOfDay::Unchanged;

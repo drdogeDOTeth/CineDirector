@@ -11,12 +11,16 @@
  *  Moves:    orbit/circle around, dolly/push in, pull back, truck/track left|right,
  *            crane/boom/pedestal up|down, pan left|right, tilt up|down, zoom in|out,
  *            flyover/drone/aerial, static/locked
- *  Framing:  extreme close-up, close-up, medium close-up, medium, wide, extreme wide/establishing
+ *  Framing:  extreme close-up, slight close-up, close-up, medium close-up, medium, wide, extreme wide
  *  Angles:   low angle, high angle, overhead/top-down/bird's eye, eye level
  *  Side:     from behind, from the front, from the left/right, over the shoulder
  *  Lens:     "50mm", wide-angle, portrait, telephoto; f/1.8, shallow focus, deep focus
- *  Focus:    focus on <actor>, rack focus from <actor> to <actor>, tracking focus
- *  Effects:  handheld/shaky (slightly/very), dutch/canted angle
+ *  Focus:    autofocus on subject by default; focus on / refocus on <actor>,
+ *            rack focus from A to B, deep focus, fixed focus / no autofocus
+ *  Aim:      looking at / follow / track / lock on / stay on <actor>
+ *  Style:    cinematic, action, horror, thriller, noir, Nolan/IMAX, bodycam, cctv,
+ *            found footage, CRT/VHS, cyberpunk, romance, documentary, music video, western, indie
+ *  Effects:  handheld/shaky (slight/very), dutch (slight/heavy), grain, vignette, bloom…
  *  Timing:   "over 8 seconds", "for 3s", slow/fast modifiers
  *  Amounts:  "180 degrees", half/full orbit, "by 5 meters"
  *  Multi:    clauses split on ".", ";", newlines, "then", "cut to", "next", "after that"
