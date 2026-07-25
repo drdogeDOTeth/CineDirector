@@ -290,6 +290,47 @@ namespace
 			Size, *Stamp.ToString());
 		return FMD5::HashAnsiString(*Raw);
 	}
+
+	// Use Demucs's no_vocals stem to reject residual accompaniment in vocals.wav.
+	// This gate is for analysis only; the sequence continues to play the full mix.
+	void ApplyStemDominanceGate(TArray<float>& Vocal, const TArray<float>& Instrumental, int32 SampleRate)
+	{
+		const int32 N = FMath::Min(Vocal.Num(), Instrumental.Num());
+		if (N < 32 || SampleRate <= 0) { return; }
+		const int32 Hop = FMath::Max(1, SampleRate / 100);
+		const int32 Frames = FMath::Max(1, N / Hop);
+		TArray<float> Gain;
+		Gain.SetNumZeroed(Frames);
+		float Previous = 0.0f;
+		for (int32 Frame = 0; Frame < Frames; ++Frame)
+		{
+			const int32 Start = Frame * Hop;
+			const int32 Count = FMath::Min(Hop * 2, N - Start);
+			double VP = 0.0, IP = 0.0;
+			for (int32 i = 0; i < Count; ++i)
+			{
+				VP += Vocal[Start + i] * Vocal[Start + i];
+				IP += Instrumental[Start + i] * Instrumental[Start + i];
+			}
+			const float V = FMath::Sqrt((float)(VP / FMath::Max(1, Count)));
+			const float I = FMath::Sqrt((float)(IP / FMath::Max(1, Count)));
+			// Music-only passages leave only a small vocal-stem residue. A real
+			// voice can sit below the backing track, so ramp rather than hard-cut.
+			const float Ratio = V / FMath::Max(I, 1e-5f);
+			const float Target = FMath::Clamp((Ratio - 0.20f) / 0.35f, 0.0f, 1.0f);
+			const float Alpha = Target > Previous ? 0.60f : 0.14f;
+			Previous += (Target - Previous) * Alpha;
+			Gain[Frame] = Previous;
+		}
+		for (int32 i = 0; i < N; ++i)
+		{
+			const float Position = (float)i / Hop;
+			const int32 F0 = FMath::Clamp((int32)Position, 0, Frames - 1);
+			const int32 F1 = FMath::Min(F0 + 1, Frames - 1);
+			Vocal[i] *= FMath::Lerp(Gain[F0], Gain[F1], Position - F0);
+		}
+		UE_LOG(LogCineDirectorLipsync, Log, TEXT("Demucs accompaniment gate applied to %d analysis frames."), Frames);
+	}
 }
 
 bool FCineLipsync::IsDemucsAvailable()
@@ -435,6 +476,20 @@ void FCineLipsync::IsolateVoiceForLipsync(const FString& SourceAudioPath, TArray
 		FString WavUsed, LoadErr;
 		if (LoadAudioMono(VocalsPath, VocalMono, VocalRate, WavUsed, LoadErr) && VocalMono.Num() > 0)
 		{
+			TArray<FString> InstrumentalFiles;
+			IFileManager::Get().FindFilesRecursive(InstrumentalFiles, *FPaths::GetPath(VocalsPath), TEXT("no_vocals.wav"), true, false);
+			if (InstrumentalFiles.Num() > 0)
+			{
+				TArray<float> InstrumentalMono;
+				int32 InstrumentalRate = 0;
+				FString InstrumentalWav, InstrumentalError;
+				if (LoadAudioMono(InstrumentalFiles[0], InstrumentalMono, InstrumentalRate, InstrumentalWav, InstrumentalError)
+					&& InstrumentalRate == VocalRate && InstrumentalMono.Num() > 0)
+				{
+					ApplyStemDominanceGate(VocalMono, InstrumentalMono, VocalRate);
+					OutNote = TEXT("Demucs vocal stem + accompaniment reject");
+				}
+			}
 			// Resample-ish: if rates match, blend sample-wise; else use vocals only.
 			if (VocalRate == OriginalRate && VocalMono.Num() > 0)
 			{
@@ -677,12 +732,13 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 	const int32 NumFrames = FMath::Max(1, Mono.Num() / Hop);
 	Frames.SetNum(NumFrames);
 
-	TArray<float> Energy, LowRatio, MidRatio, HighRatio, Sibilance;
+	TArray<float> Energy, LowRatio, MidRatio, HighRatio, Sibilance, Noisiness;
 	Energy.SetNumZeroed(NumFrames);
 	LowRatio.SetNumZeroed(NumFrames);
 	MidRatio.SetNumZeroed(NumFrames);
 	HighRatio.SetNumZeroed(NumFrames);
 	Sibilance.SetNumZeroed(NumFrames);
+	Noisiness.SetNumZeroed(NumFrames);
 
 	float PeakRms = 1e-6f;
 	for (int32 i = 0; i < NumFrames; ++i)
@@ -692,9 +748,11 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		const float* S = Mono.GetData() + Start;
 
 		float SumSq = 0.0f;
+		int32 ZeroCrossings = 0;
 		for (int32 j = 0; j < Count; ++j)
 		{
 			SumSq += S[j] * S[j];
+			if (j > 0 && ((S[j] >= 0.0f) != (S[j - 1] >= 0.0f))) { ++ZeroCrossings; }
 		}
 		const float Rms = FMath::Sqrt(SumSq / FMath::Max(1, Count));
 		Energy[i] = Rms;
@@ -710,6 +768,7 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		MidRatio[i] = Mid / Total;
 		HighRatio[i] = (High + Air * 0.5f) / Total;
 		Sibilance[i] = Air / (Low + Mid + 1e-9f);
+		Noisiness[i] = (float)ZeroCrossings / FMath::Max(1, Count - 1);
 	}
 
 	// ~95th percentile normalizer so a few peaks don't squash the whole take.
@@ -743,6 +802,19 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 		const float L = LowRatio[i];
 		const float M = MidRatio[i];
 		const float H = HighRatio[i];
+		const float Z = Noisiness[i];
+		const float Attack = i > 0 ? FMath::Max(0.0f, (Energy[i] - Energy[i - 1]) / NormPeak) : 0.0f;
+		F.Confidence = FMath::Clamp((Gate - 0.45f) / 1.35f, 0.0f, 1.0f);
+		// These are acoustic hints rather than transcript phonemes. Keep them
+		// conservative and let dedicated targets win over the fallback composites.
+		const float Unvoiced = FMath::Clamp((Z - 0.035f) * 5.5f, 0.0f, 1.0f);
+		F.FV = FMath::Clamp((M * 0.65f + H * 0.55f + Unvoiced * 0.35f - Sibilance[i] * 0.08f - 0.20f)
+			* OpenAmt * 1.2f, 0.0f, 0.82f);
+		F.TH = FMath::Clamp((Unvoiced * 0.65f + H * 0.35f - Sibilance[i] * 0.12f - 0.18f)
+			* OpenAmt, 0.0f, 0.72f);
+		F.CH = FMath::Clamp((Attack * 1.8f + FMath::Min(Sibilance[i], 1.5f) * 0.28f - 0.18f)
+			* OpenAmt, 0.0f, 0.82f);
+		F.L = FMath::Clamp((M * 0.9f + L * 0.45f - Unvoiced * 0.55f - 0.24f) * OpenAmt, 0.0f, 0.72f);
 
 		// Competitive vowel scores (formant-ish band cues).
 		// A (ah): open mid, not too bright/dark.
@@ -824,6 +896,10 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 				F.Pucker = 0.0f;
 				F.Funnel = 0.0f;
 				F.Sibilant = 0.0f;
+				F.FV = 0.0f;
+				F.L = 0.0f;
+				F.TH = 0.0f;
+				F.CH = 0.0f;
 			}
 		}
 	}
@@ -844,6 +920,10 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 	SmoothChannel(&FCineVisemeFrame::Funnel, 0.58f, 0.78f);
 	SmoothChannel(&FCineVisemeFrame::Close, 0.9f, 0.68f);
 	SmoothChannel(&FCineVisemeFrame::Sibilant, 0.55f, 0.45f);
+	SmoothChannel(&FCineVisemeFrame::FV, 0.72f, 0.48f);
+	SmoothChannel(&FCineVisemeFrame::L, 0.58f, 0.58f);
+	SmoothChannel(&FCineVisemeFrame::TH, 0.68f, 0.42f);
+	SmoothChannel(&FCineVisemeFrame::CH, 0.82f, 0.44f);
 
 	// Mild expand so mid syllables read bigger.
 	for (int32 i = 0; i < NumFrames; ++i)
@@ -866,6 +946,11 @@ TArray<FCineVisemeFrame> FCineLipsync::AnalyzeAudio(const TArray<float>& Mono, i
 			Frames[i].Pucker *= Scale;
 			Frames[i].Funnel *= Scale;
 			Frames[i].Sibilant *= Scale;
+			Frames[i].FV *= Scale;
+			Frames[i].L *= Scale;
+			Frames[i].TH *= Scale;
+			Frames[i].CH *= Scale;
+			Frames[i].Confidence *= Scale;
 			if (Gate < 0.18f)
 			{
 				Frames[i].Close = FMath::Max(Frames[i].Close, 0.85f);
@@ -920,6 +1005,7 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 		const float Peak = Rand.FRandRange(0.5f, 0.98f);
 		// One exclusive vowel per syllable: 0=A, 1=I, 2=U, 3=O
 		const int32 Shape = Rand.RandRange(0, 3);
+		const int32 Consonant = Rand.RandRange(0, 7);
 
 		const int32 Start = FMath::RoundToInt32(Time * Fps);
 		const int32 Len = FMath::Max(2, FMath::RoundToInt32(SylLen * Fps));
@@ -929,6 +1015,7 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 			// Sin envelope returns to zero at both ends → full close between syllables.
 			const float Env = FMath::Sin(T * PI) * Peak;
 			FCineVisemeFrame& F = Frames[Start + i];
+			F.Confidence = FMath::Max(F.Confidence, Env);
 			switch (Shape)
 			{
 			case 1: F.Wide = FMath::Max(F.Wide, Env); break;
@@ -936,6 +1023,15 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 			case 3: F.Funnel = FMath::Max(F.Funnel, Env); break;
 			default: F.Jaw = FMath::Max(F.Jaw, Env); break;
 			}
+		}
+		if (Start < NumFrames && Consonant < 4)
+		{
+			const float C = Peak * Rand.FRandRange(0.55f, 0.85f);
+			if (Consonant == 0) { Frames[Start].FV = C; }
+			else if (Consonant == 1) { Frames[Start].L = C; }
+			else if (Consonant == 2) { Frames[Start].TH = C; }
+			else { Frames[Start].CH = C; }
+			Frames[Start].Confidence = FMath::Max(Frames[Start].Confidence, C);
 		}
 
 		// Brief closure at the end of every syllable (not just pauses).
@@ -976,17 +1072,146 @@ TArray<FCineVisemeFrame> FCineLipsync::SynthesizeTalking(float DurationSeconds, 
 	SmoothChannel(&FCineVisemeFrame::Pucker, 0.50f, 0.55f);
 	SmoothChannel(&FCineVisemeFrame::Funnel, 0.50f, 0.55f);
 	SmoothChannel(&FCineVisemeFrame::Close, 0.90f, 0.70f);
+	SmoothChannel(&FCineVisemeFrame::FV, 0.82f, 0.48f);
+	SmoothChannel(&FCineVisemeFrame::L, 0.72f, 0.55f);
+	SmoothChannel(&FCineVisemeFrame::TH, 0.78f, 0.45f);
+	SmoothChannel(&FCineVisemeFrame::CH, 0.86f, 0.45f);
 	return Frames;
 }
 
 
+
+TArray<FCineEmotionFrame> FCineLipsync::AnalyzeEmotion(const TArray<float>& Mono, int32 SampleRate,
+	int32 Fps, FString* OutSummary)
+{
+	TArray<FCineEmotionFrame> Frames;
+	if (Mono.Num() < FMath::Max(1, SampleRate / 8) || SampleRate <= 0 || Fps <= 0)
+	{
+		if (OutSummary) { *OutSummary = TEXT("neutral"); }
+		return Frames;
+	}
+
+	const int32 Hop = FMath::Max(1, SampleRate / Fps);
+	const int32 Window = Hop * 2;
+	const int32 NumFrames = FMath::Max(1, Mono.Num() / Hop);
+	TArray<float> Energy, Bright;
+	Energy.SetNumZeroed(NumFrames);
+	Bright.SetNumZeroed(NumFrames);
+	float PeakRms = 1e-6f;
+	for (int32 i = 0; i < NumFrames; ++i)
+	{
+		const int32 Start = FMath::Clamp(i * Hop - Hop / 2, 0, Mono.Num() - 1);
+		const int32 Count = FMath::Min(Window, Mono.Num() - Start);
+		const float* S = Mono.GetData() + Start;
+		float SumSq = 0.0f;
+		for (int32 j = 0; j < Count; ++j) { SumSq += S[j] * S[j]; }
+		Energy[i] = FMath::Sqrt(SumSq / FMath::Max(1, Count));
+		PeakRms = FMath::Max(PeakRms, Energy[i]);
+		const float Low = BandPower(S, Count, SampleRate, 280.0f) + BandPower(S, Count, SampleRate, 600.0f);
+		const float Mid = BandPower(S, Count, SampleRate, 1600.0f) + BandPower(S, Count, SampleRate, 2800.0f);
+		const float High = BandPower(S, Count, SampleRate, 4800.0f) + BandPower(S, Count, SampleRate, 6800.0f);
+		Bright[i] = (Mid + High) / (Low + Mid + High + 1e-9f);
+	}
+
+	TArray<float> Sorted = Energy;
+	Sorted.Sort();
+	const float NoiseFloor = Sorted[FMath::Clamp(Sorted.Num() / 5, 0, Sorted.Num() - 1)];
+	const float NormPeak = FMath::Max(Sorted[FMath::Clamp((Sorted.Num() * 95) / 100, 0, Sorted.Num() - 1)], PeakRms * 0.55f);
+	const float SpeechGate = FMath::Max(NormPeak * 0.07f, NoiseFloor * 2.2f);
+	const int32 Radius = FMath::Max(2, FMath::RoundToInt(0.7f * Fps));
+	Frames.SetNumZeroed(NumFrames);
+	FCineEmotionFrame Previous;
+
+	for (int32 f = 0; f < NumFrames; ++f)
+	{
+		const int32 A = FMath::Max(0, f - Radius);
+		const int32 B = FMath::Min(NumFrames, f + Radius + 1);
+		double SumE = 0.0, SumE2 = 0.0, SumBright = 0.0;
+		int32 Speech = 0;
+		int32 Attacks = 0;
+		float PrevE = A > 0 ? Energy[A - 1] / NormPeak : 0.0f;
+		for (int32 i = A; i < B; ++i)
+		{
+			const float En = Energy[i] / NormPeak;
+			if (Energy[i] >= SpeechGate)
+			{
+				SumE += En;
+				SumE2 += En * En;
+				SumBright += Bright[i];
+				if (En > PrevE + 0.13f) { ++Attacks; }
+				++Speech;
+			}
+			PrevE = En;
+		}
+
+		FCineEmotionFrame Target;
+		if (Speech >= 2)
+		{
+			const float Coverage = (float)Speech / FMath::Max(1, B - A);
+			const float MeanE = (float)(SumE / Speech);
+			const float Dyn = FMath::Sqrt(FMath::Max(0.0f, (float)(SumE2 / Speech) - MeanE * MeanE));
+			const float MeanBright = (float)(SumBright / Speech);
+			const float AttackRate = (float)Attacks / FMath::Max(0.25f, (B - A) / (float)Fps);
+			const float Arousal = FMath::Clamp(MeanE * 0.58f + Dyn * 1.35f + AttackRate * 0.11f, 0.0f, 1.0f);
+			Target.Happy = FMath::Clamp((Arousal - 0.20f) * 1.35f, 0.0f, 1.0f) * FMath::Clamp((MeanBright - 0.34f) * 2.2f, 0.0f, 1.0f);
+			Target.Angry = FMath::Clamp((Arousal - 0.32f) * 1.7f, 0.0f, 1.0f) * FMath::Clamp((0.61f - MeanBright) * 2.5f, 0.0f, 1.0f);
+			Target.Sad = FMath::Clamp((0.48f - Arousal) * 2.0f, 0.0f, 1.0f) * FMath::Clamp((0.72f - Coverage) * 1.7f + (0.48f - MeanBright), 0.0f, 1.0f);
+			Target.Surprised = FMath::Clamp(AttackRate * 0.48f + Dyn * 1.7f - 0.16f, 0.0f, 1.0f) * FMath::Clamp(MeanBright * 1.45f, 0.0f, 1.0f);
+			Target.Scared = FMath::Clamp((Arousal - 0.27f) * 1.5f, 0.0f, 1.0f) * FMath::Clamp((MeanBright - 0.38f) * 1.8f, 0.0f, 1.0f) * FMath::Clamp((1.0f - Coverage) + Dyn * 2.2f, 0.0f, 1.0f);
+			Target.Disgusted = FMath::Clamp((0.50f - MeanBright) * 2.1f, 0.0f, 1.0f) * FMath::Clamp(Dyn * 2.2f + 0.18f, 0.0f, 1.0f);
+			Target.Pain = FMath::Clamp((Arousal - 0.30f) * 1.45f, 0.0f, 1.0f) * FMath::Clamp(Dyn * 2.5f, 0.0f, 1.0f);
+			Target.Suspicious = FMath::Clamp((0.58f - MeanBright) * 2.0f, 0.0f, 1.0f) * FMath::Clamp(0.72f - FMath::Abs(Arousal - 0.40f) * 1.8f, 0.0f, 1.0f);
+			const float Sum = Target.Happy + Target.Angry + Target.Sad + Target.Surprised + Target.Scared + Target.Disgusted + Target.Pain + Target.Suspicious;
+			const float MaxScore = FMath::Max(FMath::Max(Target.Happy, Target.Angry), FMath::Max(Target.Sad, Target.Surprised));
+			const float MaxOther = FMath::Max(FMath::Max(Target.Scared, Target.Disgusted), FMath::Max(Target.Pain, Target.Suspicious));
+			Target.Confidence = Coverage * FMath::Clamp((FMath::Max(MaxScore, MaxOther) - 0.08f) * 2.4f, 0.0f, 1.0f);
+			if (Sum > 1e-5f)
+			{
+				Target.Happy /= Sum; Target.Angry /= Sum; Target.Sad /= Sum; Target.Surprised /= Sum;
+				Target.Scared /= Sum; Target.Disgusted /= Sum; Target.Pain /= Sum; Target.Suspicious /= Sum;
+			}
+		}
+
+		const float Alpha = Target.Confidence > Previous.Confidence ? 0.34f : 0.18f;
+		auto Blend = [Alpha](float From, float To) { return FMath::Lerp(From, To, Alpha); };
+		FCineEmotionFrame& Out = Frames[f];
+		Out.Happy = Blend(Previous.Happy, Target.Happy); Out.Angry = Blend(Previous.Angry, Target.Angry);
+		Out.Sad = Blend(Previous.Sad, Target.Sad); Out.Surprised = Blend(Previous.Surprised, Target.Surprised);
+		Out.Scared = Blend(Previous.Scared, Target.Scared); Out.Disgusted = Blend(Previous.Disgusted, Target.Disgusted);
+		Out.Pain = Blend(Previous.Pain, Target.Pain); Out.Suspicious = Blend(Previous.Suspicious, Target.Suspicious);
+		Out.Confidence = Blend(Previous.Confidence, Target.Confidence);
+		Previous = Out;
+	}
+
+	const TCHAR* Names[] = { TEXT("happy"), TEXT("angry"), TEXT("sad"), TEXT("surprised"), TEXT("scared"), TEXT("disgusted"), TEXT("pain"), TEXT("suspicious") };
+	float Totals[8] = {};
+	float ConfidenceTotal = 0.0f;
+	for (const FCineEmotionFrame& F : Frames)
+	{
+		const float Vals[] = { F.Happy, F.Angry, F.Sad, F.Surprised, F.Scared, F.Disgusted, F.Pain, F.Suspicious };
+		for (int32 i = 0; i < 8; ++i) { Totals[i] += Vals[i] * F.Confidence; }
+		ConfidenceTotal += F.Confidence;
+	}
+	int32 Best = 0, Second = 1;
+	if (Totals[Second] > Totals[Best]) { Swap(Best, Second); }
+	for (int32 i = 2; i < 8; ++i) { if (Totals[i] > Totals[Best]) { Second = Best; Best = i; } else if (Totals[i] > Totals[Second]) { Second = i; } }
+	FString Summary = TEXT("neutral");
+	if (ConfidenceTotal > NumFrames * 0.08f)
+	{
+		Summary = Names[Best];
+		if (Totals[Second] > Totals[Best] * 0.45f) { Summary += FString::Printf(TEXT(" + %s"), Names[Second]); }
+	}
+	if (OutSummary) { *OutSummary = Summary; }
+	UE_LOG(LogCineDirectorLipsync, Log, TEXT("Continuous audio emotion: %s, mean confidence %.2f"), *Summary, ConfidenceTotal / NumFrames);
+	return Frames;
+}
 FString FCineLipsync::EstimateEmotionFromAudio(const TArray<float>& Mono, int32 SampleRate)
 {
 	// Simple, reliable detector: absolute energy/brightness/dynamics per ~2s chunk.
-	// Prefer real expressions over "calm" whenever speech energy is present.
+	// Classify clear vocal affect, but keep weak or missing evidence neutral.
 	if (Mono.Num() < SampleRate / 8 || SampleRate <= 0)
 	{
-		return TEXT("happy");
+		return TEXT("neutral");
 	}
 
 	const int32 Fps = 20;
@@ -1054,7 +1279,7 @@ FString FCineLipsync::EstimateEmotionFromAudio(const TArray<float>& Mono, int32 
 			}
 			else
 			{
-				Labels.Add(TEXT("happy"));
+				Labels.Add(TEXT("neutral"));
 			}
 			continue;
 		}
@@ -1067,7 +1292,7 @@ FString FCineLipsync::EstimateEmotionFromAudio(const TArray<float>& Mono, int32 
 		const float AttackRate = (float)Attacks / FMath::Max(0.5f, (B - A) / (float)Fps);
 		const float Arousal = MeanE * 0.55f + Dyn * 1.3f + AttackRate * 0.12f;
 
-		FString Name = TEXT("happy");
+		FString Name = TEXT("neutral");
 		if (Arousal > 0.55f && MeanBright < 0.48f && Dyn > 0.10f)
 		{
 			Name = TEXT("angry");
@@ -1099,16 +1324,9 @@ FString FCineLipsync::EstimateEmotionFromAudio(const TArray<float>& Mono, int32 
 		else
 		{
 			// Default speaking engagement — never blank.
-			Name = TEXT("happy");
+			Name = TEXT("neutral");
 		}
 
-		// Avoid immediate identical spam: if same as last, try a mild alternate.
-		if (Labels.Num() > 0 && Labels.Last().Equals(Name, ESearchCase::IgnoreCase) && NumSegs >= 3)
-		{
-			if (Name.Equals(TEXT("happy")) && MeanBright < 0.5f) { Name = TEXT("angry"); }
-			else if (Name.Equals(TEXT("angry")) && MeanE < 0.4f) { Name = TEXT("sad"); }
-			else if (Name.Equals(TEXT("sad")) && MeanE > 0.4f) { Name = TEXT("happy"); }
-		}
 		Labels.Add(Name);
 	}
 
@@ -1124,7 +1342,7 @@ FString FCineLipsync::EstimateEmotionFromAudio(const TArray<float>& Mono, int32 
 	}
 	if (Collapsed.Num() == 0)
 	{
-		return TEXT("happy");
+		return TEXT("neutral");
 	}
 	// Cap arc length.
 	while (Collapsed.Num() > 5)

@@ -80,8 +80,10 @@ namespace
 		{ TEXT("suspicious,wary,distrustful,skeptical"),
 			{ { ECineFaceSlot::ExprAngry, 0.60f },
 			  { ECineFaceSlot::BrowDown, 0.75f }, { ECineFaceSlot::EyeSquint, 0.90f }, { ECineFaceSlot::MouthPress, 0.60f } } },
-		{ TEXT("calm,neutral,relaxed,blank"),
-			{ { ECineFaceSlot::BrowUp, 0.10f }, { ECineFaceSlot::MouthSmile, 0.12f } } },
+		{ TEXT("calm,relaxed"),
+			{ { ECineFaceSlot::BrowUp, 0.05f }, { ECineFaceSlot::MouthSmile, 0.05f } } },
+		{ TEXT("neutral,blank"),
+			{ } },
 	};
 
 	/** Per-slot values one emotion segment settles at, or empty for neutral. */
@@ -131,6 +133,22 @@ namespace
 		{
 			UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Emotion segment \"%s\" matched %d def(s) strength=%.2f"),
 				*Segment, Matched, Intensity);
+		}
+	}
+
+	void AccumulateEmotionPose(const TCHAR* Name, float Weight, float* OutValues)
+	{
+		if (Weight <= KINDA_SMALL_NUMBER) { return; }
+		for (const FEmotionDef& Def : GEmotions)
+		{
+			TArray<FString> Keywords;
+			FString(Def.Keywords).ParseIntoArray(Keywords, TEXT(","));
+			if (Keywords.Num() == 0 || !Keywords[0].Equals(Name, ESearchCase::IgnoreCase)) { continue; }
+			for (const FSlotValue& SV : Def.Pose)
+			{
+				OutValues[(int32)SV.Slot] += SV.Value * Weight;
+			}
+			return;
 		}
 	}
 
@@ -374,6 +392,90 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		PrevPose = NextPose;
 	}
 
+	if (Request.AudioEmotions.Num() > 0)
+	{
+		TArray<float> MixedPose;
+		MixedPose.SetNumZeroed(SlotCount);
+		for (int32 Frame = 0; Frame < NumFrames; ++Frame)
+		{
+			MixedPose.Init(0.0f, SlotCount);
+			const int32 EmotionFrame = FMath::Clamp(
+				FMath::FloorToInt((float)Frame * Request.AudioEmotions.Num() / NumFrames),
+				0, Request.AudioEmotions.Num() - 1);
+			const FCineEmotionFrame& E = Request.AudioEmotions[EmotionFrame];
+			const float C = E.Confidence * EmotionStr;
+			AccumulateEmotionPose(TEXT("happy"), E.Happy * C, MixedPose.GetData());
+			AccumulateEmotionPose(TEXT("angry"), E.Angry * C, MixedPose.GetData());
+			AccumulateEmotionPose(TEXT("sad"), E.Sad * C, MixedPose.GetData());
+			AccumulateEmotionPose(TEXT("surprised"), E.Surprised * C, MixedPose.GetData());
+			AccumulateEmotionPose(TEXT("scared"), E.Scared * C, MixedPose.GetData());
+			AccumulateEmotionPose(TEXT("disgusted"), E.Disgusted * C, MixedPose.GetData());
+			AccumulateEmotionPose(TEXT("pain"), E.Pain * C, MixedPose.GetData());
+			AccumulateEmotionPose(TEXT("suspicious"), E.Suspicious * C, MixedPose.GetData());
+			for (int32 Slot = 0; Slot < SlotCount; ++Slot)
+			{
+				// Preserve the take-level auto estimate beneath the rolling analysis.
+				// A quiet but clearly emotional line can have low instantaneous
+				// confidence; replacing the base pose made that case look neutral.
+				Timeline[Slot][Frame] = FMath::Max(Timeline[Slot][Frame], FMath::Clamp(MixedPose[Slot], 0.0f, 1.0f));
+			}
+		}
+	}
+
+
+	// Audio-inferred emotion belongs to the spoken performance, not to the
+	// character's permanent rest pose. Fade it in around the first voiced frame
+	// and return it to true neutral after the last phrase. Manual emotion remains
+	// intentionally held for the full authored clip.
+	if (Request.bEmotionFromAudio)
+	{
+		int32 FirstSpeech = INDEX_NONE;
+		int32 LastSpeech = INDEX_NONE;
+		const int32 VisemeFrames = FMath::Min(Request.Visemes.Num(), NumFrames);
+		for (int32 Frame = 0; Frame < VisemeFrames; ++Frame)
+		{
+			const FCineVisemeFrame& V = Request.Visemes[Frame];
+			// AnalyzeAudio writes MouthClose during silence, so closure by itself
+			// must not count as voiced activity here.
+			const float Activity = V.Jaw + V.Wide + V.Pucker + V.Funnel + V.Sibilant;
+			if (Activity > 0.06f)
+			{
+				if (FirstSpeech == INDEX_NONE)
+				{
+					FirstSpeech = Frame;
+				}
+				LastSpeech = Frame;
+			}
+		}
+
+		const int32 FadeInFrames = FMath::Max(1, FMath::RoundToInt32(0.20f * Fps));
+		const int32 TailHoldFrames = FMath::Max(0, FMath::RoundToInt32(0.35f * Fps));
+		const int32 FadeOutFrames = FMath::Max(1, FMath::RoundToInt32(0.45f * Fps));
+		for (int32 Frame = 0; Frame < NumFrames; ++Frame)
+		{
+			float Gain = 0.0f;
+			if (FirstSpeech != INDEX_NONE)
+			{
+				if (Frame < FirstSpeech)
+				{
+					Gain = (float)(Frame - (FirstSpeech - FadeInFrames)) / FadeInFrames;
+				}
+				else if (Frame <= LastSpeech + TailHoldFrames)
+				{
+					Gain = 1.0f;
+				}
+				else
+				{
+					Gain = 1.0f - (float)(Frame - LastSpeech - TailHoldFrames) / FadeOutFrames;
+				}
+			}
+			Gain = FMath::SmoothStep(0.0f, 1.0f, FMath::Clamp(Gain, 0.0f, 1.0f));
+			for (int32 Slot = 0; Slot < SlotCount; ++Slot)
+			{
+				Timeline[Slot][Frame] *= Gain;
+			}
+		}
+	}
 	// Layered ARKit: only tame brow *lift* stacking (voyager tent-poles). Full-face
 	// Joy/Angry and mouth channels stay full so voids stay readable at Emotion 1–2.
 	if (Request.Profile.bLayeredBlendshapes)
@@ -452,6 +554,39 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 			FMath::Max(Timeline[(int32)ECineFaceSlot::MouthClose][Frame], V.Close);
 		Timeline[(int32)ECineFaceSlot::MouthPress][Frame] =
 			FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPress][Frame], V.Close * 0.7f);
+		const float RichGate = (1.0f - V.Close) * FMath::Clamp(VLead.Confidence + 0.25f, 0.0f, 1.0f);
+		const float FV = VLead.FV * RichGate;
+		const float LShape = VLead.L * RichGate;
+		const float TH = VLead.TH * RichGate;
+		const float CH = VLead.CH * RichGate;
+		Timeline[(int32)ECineFaceSlot::VisemeFV][Frame] = FV;
+		Timeline[(int32)ECineFaceSlot::VisemeL][Frame] = LShape;
+		Timeline[(int32)ECineFaceSlot::VisemeTH][Frame] = TH;
+		Timeline[(int32)ECineFaceSlot::VisemeCH][Frame] = CH;
+
+		// ARKit has no dedicated consonant shapes. Use restrained composites only
+		// when the analyzer did not find a purpose-built morph on this character.
+		if (!Request.Profile.HasSlot(ECineFaceSlot::VisemeFV))
+		{
+			Timeline[(int32)ECineFaceSlot::MouthPress][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPress][Frame], FV * 0.72f);
+			Timeline[(int32)ECineFaceSlot::MouthUpperUp][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::MouthUpperUp][Frame], FV * 0.24f);
+		}
+		if (!Request.Profile.HasSlot(ECineFaceSlot::VisemeL))
+		{
+			Timeline[(int32)ECineFaceSlot::JawOpen][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::JawOpen][Frame], LShape * 0.22f);
+			Timeline[(int32)ECineFaceSlot::MouthUpperUp][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::MouthUpperUp][Frame], LShape * 0.20f);
+		}
+		if (!Request.Profile.HasSlot(ECineFaceSlot::VisemeTH))
+		{
+			Timeline[(int32)ECineFaceSlot::MouthWide][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::MouthWide][Frame], TH * 0.24f);
+			Timeline[(int32)ECineFaceSlot::MouthLowerDown][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::MouthLowerDown][Frame], TH * 0.25f);
+		}
+		if (!Request.Profile.HasSlot(ECineFaceSlot::VisemeCH))
+		{
+			Timeline[(int32)ECineFaceSlot::MouthPucker][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::MouthPucker][Frame], CH * 0.36f);
+			Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::MouthFunnel][Frame], CH * 0.22f);
+			Timeline[(int32)ECineFaceSlot::MouthClose][Frame] = FMath::Max(Timeline[(int32)ECineFaceSlot::MouthClose][Frame], CH * 0.18f);
+		}
 		if (Open > 0.04f || V.Close > 0.3f || VLead.Wide > 0.05f || VLead.Pucker > 0.05f || VLead.Funnel > 0.05f)
 		{
 			const float ShapeWide = FMath::Clamp((VLead.Wide + VLead.Sibilant * 0.4f) * (1.0f - V.Close), 0.0f, 1.0f);
@@ -497,6 +632,8 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 			const ECineFaceSlot ArtSlots[] = {
 				ECineFaceSlot::JawOpen, ECineFaceSlot::MouthWide, ECineFaceSlot::MouthPucker,
 				ECineFaceSlot::MouthFunnel, ECineFaceSlot::MouthClose,
+				ECineFaceSlot::VisemeFV, ECineFaceSlot::VisemeL,
+				ECineFaceSlot::VisemeTH, ECineFaceSlot::VisemeCH,
 			};
 			const int32 Radius = FMath::Max(1, Fps / 12); // ~80 ms half-window
 			TArray<float> LocalAvg;
@@ -545,6 +682,8 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 		const ECineFaceSlot MouthSlots[] = {
 			ECineFaceSlot::JawOpen, ECineFaceSlot::MouthWide,
 			ECineFaceSlot::MouthPucker, ECineFaceSlot::MouthFunnel,
+			ECineFaceSlot::VisemeFV, ECineFaceSlot::VisemeL,
+			ECineFaceSlot::VisemeTH, ECineFaceSlot::VisemeCH,
 		};
 		for (ECineFaceSlot Slot : MouthSlots)
 		{
@@ -579,7 +718,8 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 			{
 				const float Raw = FMath::Clamp(
 					Timeline[Jaw][f] + Timeline[Wide][f] + Timeline[Pucker][f] + Timeline[Funnel][f]
-						+ Timeline[Close][f] * 0.6f,
+						+ Timeline[Close][f] * 0.6f + Timeline[(int32)ECineFaceSlot::VisemeFV][f]
+						+ Timeline[(int32)ECineFaceSlot::VisemeL][f] + Timeline[(int32)ECineFaceSlot::VisemeTH][f] + Timeline[(int32)ECineFaceSlot::VisemeCH][f],
 					0.0f, 1.0f);
 				const float Alpha = Raw > Env ? 0.45f : 0.06f;
 				Env += (Raw - Env) * Alpha;
@@ -770,7 +910,10 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 			Keys.Reserve(NumFrames);
 			for (int32 Frame = 0; Frame < NumFrames; ++Frame)
 			{
-				Keys.Emplace((float)Frame / Fps, Timeline[Slot][Frame] * Target.Scale);
+				const ECineFaceSlot FaceSlot = (ECineFaceSlot)Slot;
+				const float Raw = Timeline[Slot][Frame] * Target.Scale;
+				const float Calibrated = Raw * Request.Calibration.GainForSlot(FaceSlot) + Request.Calibration.OffsetForSlot(FaceSlot);
+				Keys.Emplace((float)Frame / Fps, FMath::Clamp(Calibrated, -0.25f, 1.0f));
 			}
 			Ctrl.SetCurveKeys(CurveId, Keys);
 			++CurvesWritten;

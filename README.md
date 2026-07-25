@@ -36,9 +36,16 @@ Highlights beyond the basics:
 - **One continuous take** — say "one take" / "continuous" (or tick the checkbox)
   and every move chains onto a single camera with no cuts; rotation stays smooth
   across the whole take.
-- **Look-at and tracking** — "orbit around the Tower looking at the Hero" moves
-  relative to one actor while aiming at another; "track the Hero" locks focus on
-  a subject.
+- **Look-at, follow, and autofocus** — "orbit around the Tower looking at the Hero"
+  moves relative to one actor while aiming at another; "follow / track / lock on
+  the Hero" aims and keeps DOF locked. Autofocus is **on by default** for any
+  named subject, re-pulls as the camera moves, and re-targets when you cut or
+  push to someone else. Override with deep focus, fixed focus, or rack focus.
+- **Slight close-up** — softer than a face-tight CU (medium close-up / chest-up).
+  Also: slight dutch, slight grain, etc.
+- **Style kits** — say "horror", "action", "cinematic", "Nolan style", "bodycam",
+  "CRT", "cyberpunk", … to pack lens, DOF, handheld, color grade, filmback and
+  post (grain/vignette/fringe/bloom). Stack with explicit words to fine-tune.
 - **Sides that make sense** — "from the right" is relative to your current
   viewport view; "from its right" is relative to the actor itself.
 - **Post-process effects** — film grain, vignette, chromatic aberration, bloom,
@@ -141,17 +148,29 @@ reimporting the FBX unlocks better face detail.
   (upper-lip raise / lower-lip depress where the rig has them), and mouth-area
   emotion (smile/frown/press) yields while words are being spoken so visemes
   stay legible — brows and eyes keep carrying the emotion. The audio is
+  Dedicated F/V, L, TH, and CH channels are generated continuously; Oculus and
+  Character Creator morphs are driven directly when present, with conservative
+  ARKit composites on rigs that lack those targets.
+- **Per-mesh calibration profiles** ? jaw, stretch, smile, pucker, lower lip,
+  and brows each have gain and neutral-offset controls. Profiles persist per
+  skeletal mesh. **Preview Neutral** shows offsets on the selected actor before
+  baking, and **Clear Preview** returns its morph overrides to rest.
   imported and placed on the sequence's audio track, synced to the animation.
 - **Articulation slider** — how crisply the mouth hits each shape: below 1 is
   soft and mumbly, above 1 snaps consonants and peaks vowels for full stage
   enunciation.
 - **Layered ARKit mouth** — off by default on dual void faces (A/I/U/O + ARKit):
-  exclusive vowels stay safe. Turn **on** for MetaHuman-style layered mouth +
-  jaw co-articulation under EE/OO/OH (more articulated; can stretch more).
+  exclusive vowels stay safe. Turn **on** to use the VRM `A` only as the jaw
+  carrier and ARKit shapes for the lips, with jaw co-articulation under
+  EE/OO/OH. Overlapping VRM I/E/U/O targets are removed and the especially hot
+  `mouthStretch` pair is conservatively scaled.
 - **No audio yet** — "Talking" synthesizes natural syllables and pauses.
 - **Emotions in plain language** — `scared`, `angry`, `happy`, `sad`,
   `surprised`, `disgusted`, `pain`, `suspicious`, `calm`, with `slightly`/`very`
   modifiers and `then` for arcs (`calm then very scared`), plus auto-blinks.
+  Auto emotion uses a conservative 0.6 strength and a rolling, confidence-weighted
+  mixture that evolves through the take. Uncertain/silent audio stays neutral and
+  inferred expressions fade naturally at speech boundaries.
 
 The result is a curves-only **additive** animation asset layered onto the
 character in the open Level Sequence — it carries no bone data, so the body

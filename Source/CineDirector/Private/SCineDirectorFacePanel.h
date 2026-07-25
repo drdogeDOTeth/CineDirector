@@ -33,10 +33,17 @@ private:
 	FReply OnAnalyzeFace();
 	FReply OnGenerate();
 
+	FReply OnSaveCalibration();
+	FReply OnResetCalibration();
+	FReply OnPreviewNeutral();
+	FReply OnClearNeutralPreview();
 	USkeletalMesh* GetTargetMesh() const;
 	void SetStatus(const FString& Message, bool bIsError = false);
 	void RefreshSliderLabels();
 
+	void LoadCalibrationProfile();
+	void SaveCalibrationProfile() const;
+	void ApplyNeutralPreview(bool bClear);
 	TWeakObjectPtr<AActor> TargetActor;
 	TSharedPtr<STextBlock> TargetLabel;
 	TSharedPtr<SEditableTextBox> AudioPathBox;
@@ -54,11 +61,15 @@ private:
 	// Bump toward 1.3–1.5 only if a VRM/GLB mouth still looks timid.
 	float MouthStrength = 1.0f;
 	/** 1.0 = full pose table; >1 pushes harder (clamped in baker). */
-	float EmotionStrength = 1.0f;
+	// NVIDIA A2E also uses 0.6 as its production emotion-strength default;
+	// this leaves headroom for character-specific full-face + micro shapes.
+	float EmotionStrength = 0.6f;
 	/** How crisply visemes hit: <1 soft/mumbly, 1 = as analyzed, >1 snappy enunciation. */
 	float Articulation = 1.0f;
-	float IsolateStrength = 0.75f; // 0 = raw audio, 1 = full isolation blend
+	float IsolateStrength = 1.0f; // 0 = raw audio, 1 = full Demucs vocal stem
 
+	/** Per-mesh gain and neutral-offset profile. */
+	FCineFaceCalibration Calibration;
 	TSharedPtr<STextBlock> MouthStrengthLabel;
 	TSharedPtr<STextBlock> EmotionStrengthLabel;
 	TSharedPtr<STextBlock> ArticulationLabel;

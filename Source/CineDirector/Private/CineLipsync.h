@@ -53,6 +53,13 @@ public:
 
 	/** Procedural syllables/pauses for "talking without audio", deterministic per seed. */
 	static TArray<FCineVisemeFrame> SynthesizeTalking(float DurationSeconds, int32 Fps = 30, int32 Seed = 0);
+	/**
+	 * Rolling audio-to-emotion analysis. Each frame contains a soft mixture plus
+	 * confidence, allowing expressions to evolve instead of snapping to one label.
+	 */
+	static TArray<FCineEmotionFrame> AnalyzeEmotion(const TArray<float>& Mono, int32 SampleRate,
+		int32 Fps = 30, FString* OutSummary = nullptr);
+
 
 	/**
 	 * Infer plain-language emotion text from dialogue audio (energy, brightness,

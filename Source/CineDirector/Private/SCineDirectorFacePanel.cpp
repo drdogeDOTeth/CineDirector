@@ -14,6 +14,7 @@
 #include "GameFramework/Actor.h"
 #include "IDesktopPlatform.h"
 #include "Selection.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Sound/SoundWave.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
@@ -21,6 +22,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSlider.h"
+#include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -30,6 +32,11 @@
 namespace
 {
 	const FLinearColor FaceErrorColor(1.0f, 0.45f, 0.35f);
+
+	FString CalibrationSection(const USkeletalMesh* Mesh)
+	{
+		return Mesh ? FString::Printf(TEXT("CineDirector.FaceCalibration.%08X"), GetTypeHash(Mesh->GetPathName())) : FString();
+	}
 }
 
 void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
@@ -85,6 +92,36 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 			];
 	};
 
+
+	auto MakeCalibrationRow = [this](float FCineFaceCalibration::* GainMember,
+		float FCineFaceCalibration::* OffsetMember, const FText& Tooltip) -> TSharedRef<SWidget>
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(STextBlock).Text(LOCTEXT("CalibrationGain", "Gain"))
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SNew(SSpinBox<float>)
+				.MinValue(0.0f).MaxValue(2.0f).Delta(0.05f)
+				.Value_Lambda([this, GainMember]() { return Calibration.*GainMember; })
+				.OnValueChanged_Lambda([this, GainMember](float V) { Calibration.*GainMember = V; })
+				.ToolTipText(Tooltip)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(STextBlock).Text(LOCTEXT("CalibrationOffset", "Neutral"))
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SNew(SSpinBox<float>)
+				.MinValue(-0.25f).MaxValue(0.25f).Delta(0.01f)
+				.Value_Lambda([this, OffsetMember]() { return Calibration.*OffsetMember; })
+				.OnValueChanged_Lambda([this, OffsetMember](float V) { Calibration.*OffsetMember = V; })
+				.ToolTipText(LOCTEXT("NeutralOffsetTip", "Value added after gain. Use Preview Neutral to inspect the character's idle/rest pose."))
+			];
+	};
 	ChildSlot
 	[
 		SNew(SVerticalBox)
@@ -226,7 +263,7 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 					[this]() { return EmotionStrength; },
 					[this](float V) { EmotionStrength = V; },
 					0.0f, 2.0f,
-					LOCTEXT("EmotionStrTip", "How strong brows / full-face Joy-Angry-Sorrow-Surprised poses are. 0 = no emotion, 1 = default, 2 = maxed.")))
+					LOCTEXT("EmotionStrTip", "How strong brows / full-face Joy-Angry-Sorrow-Surprised poses are. 0 = none, 0.6 = calibrated default, 1 = full pose.")))
 		]
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
@@ -251,6 +288,77 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 					LOCTEXT("IsoStrTip", "How hard Isolate voice filters music. 0 = raw mix, 1 = full isolation. Only used when Isolate voice is checked.")))
 		]
 
+
+		// --- Per-mesh calibration ---
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 2.0f)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("CalibrationHeader", "Mesh Calibration (gain / neutral offset)"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+		]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("CalJaw", "Jaw"), MakeCalibrationRow(
+				&FCineFaceCalibration::JawGain, &FCineFaceCalibration::JawOffset,
+				LOCTEXT("CalJawTip", "Character-specific jaw-open travel.")))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("CalStretch", "Stretch"), MakeCalibrationRow(
+				&FCineFaceCalibration::StretchGain, &FCineFaceCalibration::StretchOffset,
+				LOCTEXT("CalStretchTip", "Mouth-wide/stretch gain. Lower this first for an over-stretched ARKit idle or EE shape.")))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("CalSmile", "Smile"), MakeCalibrationRow(
+				&FCineFaceCalibration::SmileGain, &FCineFaceCalibration::SmileOffset,
+				LOCTEXT("CalSmileTip", "Smile and happy-mouth travel.")))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("CalPucker", "Pucker"), MakeCalibrationRow(
+				&FCineFaceCalibration::PuckerGain, &FCineFaceCalibration::PuckerOffset,
+				LOCTEXT("CalPuckerTip", "Pucker and funnel/rounded vowel travel.")))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("CalLowerLip", "Lower lip"), MakeCalibrationRow(
+				&FCineFaceCalibration::LowerLipGain, &FCineFaceCalibration::LowerLipOffset,
+				LOCTEXT("CalLowerLipTip", "Lower-lip depression and lower-teeth reveal.")))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+		[
+			MakeRow(LOCTEXT("CalBrows", "Brows"), MakeCalibrationRow(
+				&FCineFaceCalibration::BrowGain, &FCineFaceCalibration::BrowOffset,
+				LOCTEXT("CalBrowsTip", "Brow up, down, and inner/sad brow travel.")))
+		]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(110.0f, 4.0f, 0.0f, 2.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton).Text(LOCTEXT("SaveCalibration", "Save Profile"))
+				.OnClicked(this, &SCineDirectorFacePanel::OnSaveCalibration)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton).Text(LOCTEXT("ResetCalibration", "Reset"))
+				.OnClicked(this, &SCineDirectorFacePanel::OnResetCalibration)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton).Text(LOCTEXT("PreviewNeutral", "Preview Neutral"))
+				.OnClicked(this, &SCineDirectorFacePanel::OnPreviewNeutral)
+			]
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				SNew(SButton).Text(LOCTEXT("ClearNeutral", "Clear Preview"))
+				.OnClicked(this, &SCineDirectorFacePanel::OnClearNeutralPreview)
+			]
+		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 2.0f)
 		[
 			SNew(SButton)
@@ -290,6 +398,120 @@ void SCineDirectorFacePanel::RefreshSliderLabels()
 	}
 }
 
+
+void SCineDirectorFacePanel::LoadCalibrationProfile()
+{
+	Calibration = FCineFaceCalibration();
+	USkeletalMesh* Mesh = GetTargetMesh();
+	if (!Mesh || !GConfig) { return; }
+	const FString Section = CalibrationSection(Mesh);
+	auto Read = [&Section](const TCHAR* Key, float& Value)
+	{
+		GConfig->GetFloat(*Section, Key, Value, GEditorPerProjectIni);
+	};
+	Read(TEXT("JawGain"), Calibration.JawGain); Read(TEXT("JawOffset"), Calibration.JawOffset);
+	Read(TEXT("StretchGain"), Calibration.StretchGain); Read(TEXT("StretchOffset"), Calibration.StretchOffset);
+	Read(TEXT("SmileGain"), Calibration.SmileGain); Read(TEXT("SmileOffset"), Calibration.SmileOffset);
+	Read(TEXT("PuckerGain"), Calibration.PuckerGain); Read(TEXT("PuckerOffset"), Calibration.PuckerOffset);
+	Read(TEXT("LowerLipGain"), Calibration.LowerLipGain); Read(TEXT("LowerLipOffset"), Calibration.LowerLipOffset);
+	Read(TEXT("BrowGain"), Calibration.BrowGain); Read(TEXT("BrowOffset"), Calibration.BrowOffset);
+	Calibration.JawGain = FMath::Clamp(Calibration.JawGain, 0.0f, 2.0f);
+	Calibration.StretchGain = FMath::Clamp(Calibration.StretchGain, 0.0f, 2.0f);
+	Calibration.SmileGain = FMath::Clamp(Calibration.SmileGain, 0.0f, 2.0f);
+	Calibration.PuckerGain = FMath::Clamp(Calibration.PuckerGain, 0.0f, 2.0f);
+	Calibration.LowerLipGain = FMath::Clamp(Calibration.LowerLipGain, 0.0f, 2.0f);
+	Calibration.BrowGain = FMath::Clamp(Calibration.BrowGain, 0.0f, 2.0f);
+}
+
+void SCineDirectorFacePanel::SaveCalibrationProfile() const
+{
+	USkeletalMesh* Mesh = GetTargetMesh();
+	if (!Mesh || !GConfig) { return; }
+	const FString Section = CalibrationSection(Mesh);
+	auto Write = [&Section](const TCHAR* Key, float Value)
+	{
+		GConfig->SetFloat(*Section, Key, Value, GEditorPerProjectIni);
+	};
+	Write(TEXT("JawGain"), Calibration.JawGain); Write(TEXT("JawOffset"), Calibration.JawOffset);
+	Write(TEXT("StretchGain"), Calibration.StretchGain); Write(TEXT("StretchOffset"), Calibration.StretchOffset);
+	Write(TEXT("SmileGain"), Calibration.SmileGain); Write(TEXT("SmileOffset"), Calibration.SmileOffset);
+	Write(TEXT("PuckerGain"), Calibration.PuckerGain); Write(TEXT("PuckerOffset"), Calibration.PuckerOffset);
+	Write(TEXT("LowerLipGain"), Calibration.LowerLipGain); Write(TEXT("LowerLipOffset"), Calibration.LowerLipOffset);
+	Write(TEXT("BrowGain"), Calibration.BrowGain); Write(TEXT("BrowOffset"), Calibration.BrowOffset);
+	GConfig->Flush(false, GEditorPerProjectIni);
+}
+
+void SCineDirectorFacePanel::ApplyNeutralPreview(bool bClear)
+{
+	AActor* Actor = TargetActor.Get();
+	USkeletalMesh* Mesh = GetTargetMesh();
+	if (!Actor || !Mesh)
+	{
+		SetStatus(TEXT("Pick a character before previewing calibration."), true);
+		return;
+	}
+	const bool bLayered = LayeredArkitMouthCheck.IsValid() && LayeredArkitMouthCheck->IsChecked();
+	const FCineFaceProfile Profile = FCineFaceAnalyzer::Analyze(Mesh, bLayered);
+	if (Profile.bMetaHuman)
+	{
+		SetStatus(TEXT("Neutral preview currently applies raw morph targets. MetaHuman control curves will use this profile when baked."), true);
+		return;
+	}
+	TArray<USkeletalMeshComponent*> Components;
+	Actor->GetComponents<USkeletalMeshComponent>(Components);
+	int32 Applied = 0;
+	for (USkeletalMeshComponent* Component : Components)
+	{
+		if (!Component || Component->GetSkeletalMeshAsset() != Mesh) { continue; }
+		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
+		{
+			const float Value = bClear ? 0.0f : FMath::Clamp(Calibration.OffsetForSlot((ECineFaceSlot)Slot), -0.25f, 0.25f);
+			for (const FCineFaceCurveTarget& Target : Profile.Slots[Slot])
+			{
+				Component->SetMorphTarget(Target.CurveName, Value, bClear || FMath::IsNearlyZero(Value));
+				++Applied;
+			}
+		}
+		Component->MarkRenderStateDirty();
+	}
+	SetStatus(bClear
+		? FString::Printf(TEXT("Cleared neutral preview on %s."), *Mesh->GetName())
+		: FString::Printf(TEXT("Previewing saved-neutral offsets on %s (%d mapped targets)."), *Mesh->GetName(), Applied));
+}
+
+FReply SCineDirectorFacePanel::OnSaveCalibration()
+{
+	if (!GetTargetMesh()) { SetStatus(TEXT("Pick a character before saving calibration."), true); return FReply::Handled(); }
+	SaveCalibrationProfile();
+	SetStatus(FString::Printf(TEXT("Saved calibration profile for %s."), *GetTargetMesh()->GetName()));
+	return FReply::Handled();
+}
+
+FReply SCineDirectorFacePanel::OnResetCalibration()
+{
+	USkeletalMesh* Mesh = GetTargetMesh();
+	Calibration = FCineFaceCalibration();
+	if (Mesh && GConfig)
+	{
+		GConfig->EmptySection(*CalibrationSection(Mesh), GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
+	ApplyNeutralPreview(true);
+	SetStatus(Mesh ? FString::Printf(TEXT("Reset calibration for %s to defaults."), *Mesh->GetName()) : TEXT("Calibration reset."));
+	return FReply::Handled();
+}
+
+FReply SCineDirectorFacePanel::OnPreviewNeutral()
+{
+	ApplyNeutralPreview(false);
+	return FReply::Handled();
+}
+
+FReply SCineDirectorFacePanel::OnClearNeutralPreview()
+{
+	ApplyNeutralPreview(true);
+	return FReply::Handled();
+}
 FReply SCineDirectorFacePanel::OnUseSelectedActor()
 {
 	AActor* Selected = GEditor ? GEditor->GetSelectedActors()->GetTop<AActor>() : nullptr;
@@ -299,6 +521,7 @@ FReply SCineDirectorFacePanel::OnUseSelectedActor()
 		return FReply::Handled();
 	}
 	TargetActor = Selected;
+	LoadCalibrationProfile();
 	if (USkeletalMesh* Mesh = GetTargetMesh())
 	{
 		TargetLabel->SetText(FText::FromString(FString::Printf(TEXT("%s (%s)"), *Selected->GetActorLabel(), *Mesh->GetName())));
@@ -402,6 +625,7 @@ FReply SCineDirectorFacePanel::OnGenerate()
 	Request.MouthStrength = MouthStrength;
 	Request.EmotionStrength = EmotionStrength;
 	Request.Articulation = Articulation;
+	Request.Calibration = Calibration;
 	Request.DurationSeconds = FMath::Clamp(FCString::Atof(*DurationBox->GetText().ToString()), 0.5f, 600.0f);
 	if (Request.DurationSeconds < 0.51f)
 	{
@@ -445,21 +669,24 @@ FReply SCineDirectorFacePanel::OnGenerate()
 			Request.Visemes = FCineLipsync::AnalyzeAudio(LipSamples, LipRate);
 		}
 		// Auto-pick emotion from the raw dialogue (full dynamics).
-		// Always fill something when the box is blank so faces never stay neutral.
+		// The rolling detector supplies short-term changes. Keep the established
+		// take-level estimator as a base too: it catches valid, low-energy
+		// dialogue that the per-frame confidence gate treats as uncertain.
 		if (ManualEmotion.IsEmpty())
 		{
+			FString RollingEstimate;
+			Request.AudioEmotions = FCineLipsync::AnalyzeEmotion(Samples, SampleRate, Request.Fps, &RollingEstimate);
 			FString Estimated = FCineLipsync::EstimateEmotionFromAudio(Samples, SampleRate);
-			if (Estimated.IsEmpty())
+			if (Estimated.IsEmpty() || Estimated.Equals(TEXT("neutral"), ESearchCase::IgnoreCase))
 			{
-				Estimated = TEXT("happy");
+				Estimated = RollingEstimate;
 			}
+			if (Estimated.IsEmpty()) { Estimated = TEXT("neutral"); }
 			Request.EmotionText = Estimated;
 			bEmotionFromAudio = true;
-			// Show what auto picked so the user can see/edit it.
-			if (EmotionBox.IsValid())
-			{
-				EmotionBox->SetText(FText::FromString(Estimated));
-			}
+			Request.bEmotionFromAudio = true;
+			// Keep the box blank so the next generation remains auto; the status
+			// message reports the estimate without turning it into a stale override.
 		}
 		Sound = FCineFaceBaker::ImportAudioAsset(WavPath, Error);
 		if (!Sound)

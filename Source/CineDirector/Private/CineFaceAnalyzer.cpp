@@ -22,6 +22,10 @@ const TCHAR* CineFaceSlotName(ECineFaceSlot Slot)
 	case ECineFaceSlot::MouthPress:     return TEXT("MouthPress");
 	case ECineFaceSlot::MouthUpperUp:   return TEXT("MouthUpperUp");
 	case ECineFaceSlot::MouthLowerDown: return TEXT("MouthLowerDown");
+	case ECineFaceSlot::VisemeFV:       return TEXT("VisemeFV");
+	case ECineFaceSlot::VisemeL:        return TEXT("VisemeL");
+	case ECineFaceSlot::VisemeTH:       return TEXT("VisemeTH");
+	case ECineFaceSlot::VisemeCH:       return TEXT("VisemeCH");
 	case ECineFaceSlot::NoseSneer:      return TEXT("NoseSneer");
 	case ECineFaceSlot::BrowUp:         return TEXT("BrowUp");
 	case ECineFaceSlot::BrowDown:       return TEXT("BrowDown");
@@ -125,7 +129,11 @@ namespace
 			Add(TEXT("viseme_ou"), ECineFaceSlot::MouthPucker);
 			Add(TEXT("viseme_PP"), ECineFaceSlot::MouthClose);
 			Add(TEXT("viseme_SS"), ECineFaceSlot::MouthWide, 0.5f);
-			Add(TEXT("viseme_FF"), ECineFaceSlot::MouthPress, 0.6f);
+			Add(TEXT("viseme_FF"), ECineFaceSlot::VisemeFV);
+			Add(TEXT("viseme_TH"), ECineFaceSlot::VisemeTH);
+			Add(TEXT("viseme_DD"), ECineFaceSlot::VisemeL);
+			Add(TEXT("viseme_nn"), ECineFaceSlot::VisemeL, 0.85f);
+			Add(TEXT("viseme_CH"), ECineFaceSlot::VisemeCH);
 			// VRM / MMD-style: A-I-U-E-O vowel visemes (exclusive), full-face emotions, gaze
 			Add(TEXT("A"), ECineFaceSlot::JawOpen);
 			Add(TEXT("I"), ECineFaceSlot::MouthWide);
@@ -167,7 +175,10 @@ namespace
 			Add(TEXT("V_Tight_O"), ECineFaceSlot::MouthPucker);
 			Add(TEXT("V_Explosive"), ECineFaceSlot::MouthClose);
 			Add(TEXT("V_Lip_Open"), ECineFaceSlot::MouthFunnel, 0.7f);
-			Add(TEXT("V_Dental_Lip"), ECineFaceSlot::MouthPress, 0.6f);
+			Add(TEXT("V_Dental_Lip"), ECineFaceSlot::VisemeFV);
+			Add(TEXT("V_Tongue_up"), ECineFaceSlot::VisemeL);
+			Add(TEXT("V_Tongue_Raise"), ECineFaceSlot::VisemeL);
+			Add(TEXT("V_Affricate"), ECineFaceSlot::VisemeCH);
 		}
 		return Table;
 	}
@@ -190,6 +201,13 @@ namespace
 			{ TEXT("gazeright"), ECineFaceSlot::EyeLookRight, 1.0f },
 			// Prefixed void look sets (Navy/Twirl/Stoned/Lime) also match *lookleft via
 			// the generic patterns above; keep explicit names for clarity in tables.
+			{ TEXT("visemeth"), ECineFaceSlot::VisemeTH, 1.0f },
+			{ TEXT("dentalfricative"), ECineFaceSlot::VisemeTH, 1.0f },
+			{ TEXT("dentallip"), ECineFaceSlot::VisemeFV, 1.0f },
+			{ TEXT("labiodental"), ECineFaceSlot::VisemeFV, 1.0f },
+			{ TEXT("tongueup"), ECineFaceSlot::VisemeL, 1.0f },
+			{ TEXT("tongueraise"), ECineFaceSlot::VisemeL, 1.0f },
+			{ TEXT("affricate"), ECineFaceSlot::VisemeCH, 1.0f },
 			{ TEXT("jawopen"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("mouthopen"), ECineFaceSlot::JawOpen, 1.0f },
 			{ TEXT("jawdrop"), ECineFaceSlot::JawOpen, 1.0f },
@@ -393,6 +411,7 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh, bool bPreferLay
 	if (bArkitRich || bVrmMouth)
 	{
 		Profile.bLayeredBlendshapes = bArkitRich;
+		Profile.bLayeredArkitMouth = bLayeredMouth;
 		if (bLayeredMouth)
 		{
 			// Opt-in MetaHuman path: layer ARKit mouth + keep A for grill jaw.
@@ -404,6 +423,8 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh, bool bPreferLay
 		}
 
 		int32 StrippedArkitMouth = 0;
+		int32 StrippedVrmMouth = 0;
+		int32 DisabledStretch = 0;
 		int32 Softened = 0;
 		auto IsExclusiveMouthSlot = [](int32 Slot) -> bool
 		{
@@ -428,9 +449,46 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh, bool bPreferLay
 		for (int32 Slot = 0; Slot < (int32)ECineFaceSlot::Count; ++Slot)
 		{
 			TArray<FCineFaceCurveTarget>& Targets = Profile.Slots[Slot];
+			bool bHasPrimaryWideVowel = false;
+			if (Slot == (int32)ECineFaceSlot::MouthWide)
+			{
+				for (const FCineFaceCurveTarget& T : Targets)
+				{
+					bHasPrimaryWideVowel |= NormalizeName(T.CurveName.ToString()) == TEXT("i");
+				}
+			}
 			for (int32 i = Targets.Num() - 1; i >= 0; --i)
 			{
 				const FString Norm = NormalizeName(Targets[i].CurveName.ToString());
+				// These hybrid void exports contain the VRM vowel set as well as
+				// ARKit mouth micros. On this family of meshes, the paired ARKit
+				// mouthStretch targets pull the lips far beyond their intended range
+				// even at a very small curve value. Do not use them in the opt-in
+				// layered path; the remaining speech shapes stay stable.
+				if (bLayeredMouth && bVrmMouth && Norm.Contains(TEXT("mouthstretch")))
+				{
+					Targets.RemoveAt(i);
+					++DisabledStretch;
+					continue;
+				}
+				// A layered ARKit mouth needs one jaw carrier, not the complete VRM
+				// vowel pose underneath every ARKit lip shape. Keep A for void/grill
+				// jaw travel and remove I/E/U/O. Otherwise a Wide value drives I + E
+				// + both mouthStretch targets simultaneously.
+				if (bLayeredMouth && bVrmMouth && IsVrmVowelName(Norm) && Norm != TEXT("a"))
+				{
+					Targets.RemoveAt(i);
+					++StrippedVrmMouth;
+					continue;
+				}
+				// Exclusive VRM mode is also one pose per canonical slot. Prefer I
+				// over its secondary E alias instead of firing both morphs together.
+				if (!bLayeredMouth && bHasPrimaryWideVowel && Norm == TEXT("e"))
+				{
+					Targets.RemoveAt(i);
+					++StrippedVrmMouth;
+					continue;
+				}
 				// Prefer grill-baked A over ARKit jawOpen on the same slot (double open).
 				if (Slot == (int32)ECineFaceSlot::JawOpen && Norm == TEXT("jawopen") && bVrmMouth)
 				{
@@ -468,7 +526,15 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh, bool bPreferLay
 			for (FCineFaceCurveTarget& T : Profile.Slots[Slot])
 			{
 				const FString Norm = NormalizeName(T.CurveName.ToString());
-				if (Norm.Contains(TEXT("mouthlowerdown")) || Norm.Contains(TEXT("lowerlip")))
+				// NVIDIA's own character profiles commonly reduce mouthStretch to
+				// ~0.05. Keep a little more range for stylized voids, but never let
+				// this especially hot pair run at the generic layered-mouth gain.
+				if (bLayeredMouth && Norm.Contains(TEXT("mouthstretch")))
+				{
+					T.Scale *= 0.20f;
+					++Softened;
+				}
+				else if (Norm.Contains(TEXT("mouthlowerdown")) || Norm.Contains(TEXT("lowerlip")))
 				{
 					T.Scale *= bLayeredMouth ? 0.40f : 0.45f;
 					++Softened;
@@ -490,14 +556,14 @@ FCineFaceProfile FCineFaceAnalyzer::Analyze(USkeletalMesh* Mesh, bool bPreferLay
 		if (bLayeredMouth)
 		{
 			Profile.Notes.Add(FString::Printf(
-				TEXT("Layered ARKit mouth ON: exclusive off, jaw co-articulation on, ARKit mouth micros kept (soft-scaled). %d stretchy targets eased. May stretch more than exclusive mode."),
-				Softened));
+				TEXT("Layered ARKit mouth ON: kept VRM A as jaw carrier, removed %d overlapping VRM vowel target(s), disabled %d unstable mouthStretch target(s), and eased %d ARKit targets."),
+				StrippedVrmMouth, DisabledStretch, Softened));
 		}
 		else if (bArkitRich && bVrmMouth)
 		{
 			Profile.Notes.Add(FString::Printf(
-				TEXT("Void dual face (exclusive A/I/U/O): stripped %d ARKit mouth curves from viseme slots; soft-scaled %d lower-lip/brow-up targets. Enable \"Layered ARKit mouth\" for MetaHuman-style co-articulation."),
-				StrippedArkitMouth, Softened));
+				TEXT("Void dual face (exclusive A/I/U/O): stripped %d ARKit mouth curves and %d duplicate VRM vowel target(s); soft-scaled %d lower-lip/brow-up targets. Enable \"Layered ARKit mouth\" for ARKit co-articulation."),
+				StrippedArkitMouth, StrippedVrmMouth, Softened));
 		}
 		else if (bArkitRich)
 		{

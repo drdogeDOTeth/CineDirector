@@ -18,6 +18,12 @@ struct FCineFaceBakeRequest
 
 	/** Mouth shapes from audio or synthesis; may be empty (emotion-only). */
 	TArray<FCineVisemeFrame> Visemes;
+	/** Continuous audio emotion; used when the direction box is left blank. */
+	TArray<FCineEmotionFrame> AudioEmotions;
+
+	/** Saved gain/offset profile for this skeletal mesh. */
+	FCineFaceCalibration Calibration;
+
 
 	/**
 	 * Plain-language emotions, "scared" or "calm then angry".
@@ -25,6 +31,13 @@ struct FCineFaceBakeRequest
 	 * the panel fills this via FCineLipsync::EstimateEmotionFromAudio.
 	 */
 	FString EmotionText;
+
+	/**
+	 * EmotionText came from audio analysis rather than an explicit direction.
+	 * Inferred emotion is faded to neutral around leading/trailing silence so
+	 * the character does not hold a speech-derived mouth pose while at rest.
+	 */
+	bool bEmotionFromAudio = false;
 
 	bool bAutoBlink = true;
 	float DurationSeconds = 6.0f;
@@ -35,9 +48,9 @@ struct FCineFaceBakeRequest
 	 * MouthStrength scales lipsync jaw/shape travel.
 	 * EmotionStrength scales brows / full-face Expr* poses.
 	 */
-	float MouthStrength = 1.3f;
+	float MouthStrength = 1.0f;
 	/** 1.0 = full pose table values; 0 = off; 2 = maxed. */
-	float EmotionStrength = 1.0f;
+	float EmotionStrength = 0.6f;
 	/**
 	 * How crisply the mouth hits each viseme. 1 = as analyzed; below 1 blends
 	 * toward its local average (soft, mumbly); above 1 sharpens transitions so

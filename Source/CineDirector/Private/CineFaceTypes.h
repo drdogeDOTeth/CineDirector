@@ -21,6 +21,10 @@ enum class ECineFaceSlot : uint8
 	MouthPress,      // lips pressed together, tension
 	MouthUpperUp,    // upper lip raise — upper-teeth reveal on open/wide vowels
 	MouthLowerDown,  // lower lip depress — lower-teeth reveal
+	VisemeFV,        // labiodental fricatives (F/V)
+	VisemeL,         // tongue-up alveolar (L)
+	VisemeTH,        // dental fricative (TH)
+	VisemeCH,        // affricates (CH/J/SH)
 	NoseSneer,
 	BrowUp,          // outer/general brow raise
 	BrowDown,        // knit / anger
@@ -43,6 +47,57 @@ enum class ECineFaceSlot : uint8
 	ExprSurprised,
 
 	Count
+};
+
+/** Character-specific face calibration, persisted per skeletal mesh. */
+struct FCineFaceCalibration
+{
+	float JawGain = 1.0f;
+	float JawOffset = 0.0f;
+	float StretchGain = 1.0f;
+	float StretchOffset = 0.0f;
+	float SmileGain = 1.0f;
+	float SmileOffset = 0.0f;
+	float PuckerGain = 1.0f;
+	float PuckerOffset = 0.0f;
+	float LowerLipGain = 1.0f;
+	float LowerLipOffset = 0.0f;
+	float BrowGain = 1.0f;
+	float BrowOffset = 0.0f;
+
+	float GainForSlot(ECineFaceSlot Slot) const
+	{
+		switch (Slot)
+		{
+		case ECineFaceSlot::JawOpen: return JawGain;
+		case ECineFaceSlot::MouthWide: return StretchGain;
+		case ECineFaceSlot::MouthSmile: return SmileGain;
+		case ECineFaceSlot::MouthPucker:
+		case ECineFaceSlot::MouthFunnel: return PuckerGain;
+		case ECineFaceSlot::MouthLowerDown: return LowerLipGain;
+		case ECineFaceSlot::BrowUp:
+		case ECineFaceSlot::BrowDown:
+		case ECineFaceSlot::BrowSad: return BrowGain;
+		default: return 1.0f;
+		}
+	}
+
+	float OffsetForSlot(ECineFaceSlot Slot) const
+	{
+		switch (Slot)
+		{
+		case ECineFaceSlot::JawOpen: return JawOffset;
+		case ECineFaceSlot::MouthWide: return StretchOffset;
+		case ECineFaceSlot::MouthSmile: return SmileOffset;
+		case ECineFaceSlot::MouthPucker:
+		case ECineFaceSlot::MouthFunnel: return PuckerOffset;
+		case ECineFaceSlot::MouthLowerDown: return LowerLipOffset;
+		case ECineFaceSlot::BrowUp:
+		case ECineFaceSlot::BrowDown:
+		case ECineFaceSlot::BrowSad: return BrowOffset;
+		default: return 0.0f;
+		}
+	}
 };
 
 /** Human-readable slot name (for status text and logs). */
@@ -77,6 +132,13 @@ struct FCineFaceProfile
 	 */
 	bool bLayeredBlendshapes = false;
 
+	/**
+	 * The user explicitly selected the ARKit mouth path on a dual VRM+ARKit
+	 * face. This is narrower than bLayeredBlendshapes: it records which mouth
+	 * representation the analyzer selected so the baker can tune it safely.
+	 */
+	bool bLayeredArkitMouth = false;
+
 	/** Per-slot curve targets; an empty array means the slot is unmapped on this mesh. */
 	TArray<FCineFaceCurveTarget> Slots[(int32)ECineFaceSlot::Count];
 
@@ -105,4 +167,23 @@ struct FCineVisemeFrame
 	float Funnel = 0.0f;    // open-round OH (VRM "O")
 	float Close = 0.0f;     // consonant closure (M/B/P)
 	float Sibilant = 0.0f;  // S/SH hiss — teeth together, slightly wide
+	float FV = 0.0f;
+	float L = 0.0f;
+	float TH = 0.0f;
+	float CH = 0.0f;
+	float Confidence = 0.0f;
+};
+
+/** Continuous, confidence-weighted audio emotion at one analysis frame. */
+struct FCineEmotionFrame
+{
+	float Happy = 0.0f;
+	float Angry = 0.0f;
+	float Sad = 0.0f;
+	float Surprised = 0.0f;
+	float Scared = 0.0f;
+	float Disgusted = 0.0f;
+	float Pain = 0.0f;
+	float Suspicious = 0.0f;
+	float Confidence = 0.0f;
 };
