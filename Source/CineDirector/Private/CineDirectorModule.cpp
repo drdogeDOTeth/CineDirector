@@ -5,6 +5,7 @@
 #include "CineBodyAuthor.h"
 #include "CineBodyGrammar.h"
 #include "CineBodyRig.h"
+#include "CineFaceBaker.h"
 #include "Engine/SkeletalMesh.h"
 #include "FileHelpers.h"
 #include "Framework/Application/SlateApplication.h"
@@ -59,6 +60,16 @@ public:
 			TEXT("Plans shots from a description and logs the result without executing it: CineDirector.PlanShots slow orbit around the hero, 85mm"),
 			FConsoleCommandWithArgsDelegate::CreateRaw(this, &FCineDirectorModule::PlanShotsCommand),
 			ECVF_Default);
+
+		// Same referencer-checked sweep as the Face panel button, from the console.
+		// Editor-only in practice: it needs a fully scanned asset registry, which
+		// rules out headless startup, and -ExecCmds cannot reach it either (commandlets
+		// ignore ExecCmds, and a -nullrhi editor boot has no UWorld for the exec path).
+		PurgeFaceCommand = IConsoleManager::Get().RegisterConsoleCommand(
+			TEXT("CineDirector.PurgeFaceAnims"),
+			TEXT("Deletes face anims under /Game/CineDirector/FaceAnims that no sequence or map references: CineDirector.PurgeFaceAnims"),
+			FConsoleCommandWithArgsDelegate::CreateStatic(&FCineDirectorModule::PurgeFaceAnimsCommand),
+			ECVF_Default);
 	}
 
 	virtual void ShutdownModule() override
@@ -72,6 +83,11 @@ public:
 		{
 			IConsoleManager::Get().UnregisterConsoleObject(PlanCommand);
 			PlanCommand = nullptr;
+		}
+		if (PurgeFaceCommand)
+		{
+			IConsoleManager::Get().UnregisterConsoleObject(PurgeFaceCommand);
+			PurgeFaceCommand = nullptr;
 		}
 		if (FSlateApplication::IsInitialized())
 		{
@@ -105,6 +121,21 @@ public:
 					UE_LOG(LogTemp, Display, TEXT("CineDirector.PlanShots result — %s"),
 						*FCineShotPlanJson::DescribePlan(Plan));
 				}));
+	}
+
+	/** CineDirector.PurgeFaceAnims — delete face anims nothing references. */
+	static void PurgeFaceAnimsCommand(const TArray<FString>& Args)
+	{
+		// A partial registry reports no referencers, which would make a take that IS
+		// used by a sequence look orphaned and get deleted. Block on any in-flight
+		// scan first. Note this waits for a requested scan, it does not start one.
+		FAssetRegistryModule& RegistryModule =
+			FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		RegistryModule.Get().WaitForCompletion();
+
+		FString Message;
+		FCineFaceBaker::PurgeUnusedFaceAnims(Message);
+		UE_LOG(LogTemp, Display, TEXT("CineDirector.PurgeFaceAnims: %s"), *Message);
 	}
 
 	static void AuthorBodyCommand(const TArray<FString>& Args)
@@ -189,6 +220,7 @@ private:
 	TSharedPtr<IShotPlanProvider> Provider;
 	IConsoleCommand* BodyCommand = nullptr;
 	IConsoleCommand* PlanCommand = nullptr;
+	IConsoleCommand* PurgeFaceCommand = nullptr;
 };
 
 IMPLEMENT_MODULE(FCineDirectorModule, CineDirector)
