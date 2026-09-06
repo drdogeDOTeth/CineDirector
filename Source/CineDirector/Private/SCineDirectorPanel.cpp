@@ -99,16 +99,23 @@ void SCineDirectorPanel::Construct(const FArguments& InArgs)
 			[
 				SNew(SButton)
 				.ButtonStyle(FAppStyle::Get(), "PrimaryButton")
-				.Text(LOCTEXT("CreateShots", "Create Shots in Sequencer"))
+				.Text(this, &SCineDirectorPanel::GetCreateButtonText)
 				.ToolTipText(LOCTEXT("CreateShotsTooltip",
 					"Spawns cine cameras and authors keys and camera cuts in the Level Sequence currently open in Sequencer. One undo step."))
+				.IsEnabled_Lambda([this] { return !bRequestInFlight; })
 				.OnClicked(this, &SCineDirectorPanel::OnCreateShots)
 			]
 
 			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(10.0f, 0.0f, 0.0f, 0.0f)
 			[
 				SNew(STextBlock)
-				.Text(Provider.IsValid() ? Provider->GetProviderName() : FText::GetEmpty())
+				// Read live: the backend is a project setting and can change under us.
+				.Text_Lambda([this]
+				{
+					return Provider.IsValid() ? Provider->GetProviderName() : FText::GetEmpty();
+				})
+				.ToolTipText(LOCTEXT("ProviderTooltip",
+					"Which backend interprets the prompt. Change it in Project Settings → Plugins → CineDirector."))
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 			]
 		]
@@ -650,37 +657,71 @@ FReply SCineDirectorPanel::OnUsePreset(FString Prompt)
 	return FReply::Handled();
 }
 
+FText SCineDirectorPanel::GetCreateButtonText() const
+{
+	return bRequestInFlight
+		? LOCTEXT("CreateShotsWorking", "Planning the shots…")
+		: LOCTEXT("CreateShots", "Create Shots in Sequencer");
+}
+
 FReply SCineDirectorPanel::OnCreateShots()
 {
-	if (!Provider.IsValid() || !DescriptionBox.IsValid())
+	if (!Provider.IsValid() || !DescriptionBox.IsValid() || bRequestInFlight)
 	{
 		return FReply::Handled();
 	}
 
 	const FCineSceneContext Scene = FShotPlanExecutor::BuildSceneContext();
+	const bool bForceContinuous = ContinuousCheck.IsValid() && ContinuousCheck->IsChecked();
 
-	FCineShotPlan Plan;
-	FText Error;
-	if (!Provider->BuildShotPlan(DescriptionBox->GetText().ToString(), Scene, Plan, Error))
+	if (Provider->IsAsynchronous())
 	{
-		UE_LOG(LogCineDirectorUI, Warning, TEXT("Parse failed: %s"), *Error.ToString());
+		bRequestInFlight = true;
+		StatusBlock->SetText(LOCTEXT("PlanningStatus", "Asking the model for a shot plan…"));
+		StatusBlock->SetColorAndOpacity(FSlateColor::UseSubduedForeground());
+	}
+
+	// The reply can land after the tab is closed, so hold a weak reference.
+	TWeakPtr<SCineDirectorPanel> WeakSelf = SharedThis(this);
+
+	Provider->BuildShotPlanAsync(DescriptionBox->GetText().ToString(), Scene,
+		FCineShotPlanReady::CreateLambda(
+			[WeakSelf, bForceContinuous](bool bSuccess, const FCineShotPlan& Plan, const FText& Error)
+			{
+				if (const TSharedPtr<SCineDirectorPanel> Self = WeakSelf.Pin())
+				{
+					Self->HandlePlanReady(bSuccess, Plan, Error, bForceContinuous);
+				}
+			}));
+
+	return FReply::Handled();
+}
+
+void SCineDirectorPanel::HandlePlanReady(bool bSuccess, const FCineShotPlan& Plan, const FText& Error, bool bForceContinuous)
+{
+	bRequestInFlight = false;
+
+	if (!bSuccess)
+	{
+		UE_LOG(LogCineDirectorUI, Warning, TEXT("Shot plan failed: %s"), *Error.ToString());
 		StatusBlock->SetText(Error);
 		StatusBlock->SetColorAndOpacity(FSlateColor(ErrorColor));
-		return FReply::Handled();
+		return;
 	}
 
-	if (ContinuousCheck.IsValid() && ContinuousCheck->IsChecked())
+	FCineShotPlan Final = Plan;
+	if (bForceContinuous)
 	{
-		Plan.bOneContinuousShot = true;
+		Final.bOneContinuousShot = true;
 	}
 
-	const FCineExecuteResult Result = FShotPlanExecutor::Execute(Plan);
+	const FCineExecuteResult Result = FShotPlanExecutor::Execute(Final);
 	if (!Result.bSuccess)
 	{
 		UE_LOG(LogCineDirectorUI, Warning, TEXT("Execute failed: %s"), *Result.Error.ToString());
 		StatusBlock->SetText(Result.Error);
 		StatusBlock->SetColorAndOpacity(FSlateColor(ErrorColor));
-		return FReply::Handled();
+		return;
 	}
 
 	FString Message = FString::Printf(TEXT("Created %d shot%s, %.1f s total."),
@@ -691,8 +732,6 @@ FReply SCineDirectorPanel::OnCreateShots()
 	}
 	StatusBlock->SetText(FText::FromString(Message));
 	StatusBlock->SetColorAndOpacity(FSlateColor::UseForeground());
-
-	return FReply::Handled();
 }
 
 #undef LOCTEXT_NAMESPACE

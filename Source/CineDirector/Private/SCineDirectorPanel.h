@@ -6,6 +6,8 @@
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/SCompoundWidget.h"
 
+struct FCineShotPlan;
+
 class IShotPlanProvider;
 class SCheckBox;
 class SEditableTextBox;
@@ -28,6 +30,20 @@ public:
 private:
 	FReply OnCreateShots();
 
+	/**
+	 * Executes a plan the provider handed back and writes the result to the status
+	 * block. Called inline for the offline parser, and from the HTTP callback for
+	 * model-backed providers.
+	 *
+	 * @param bForceContinuous the one-take checkbox as it stood when the request
+	 *        was sent, so a late reply is not re-interpreted against a toggle the
+	 *        user has since flipped.
+	 */
+	void HandlePlanReady(bool bSuccess, const FCineShotPlan& Plan, const FText& Error, bool bForceContinuous);
+
+	/** "Create Shots in Sequencer", or a progress label while a request is out. */
+	FText GetCreateButtonText() const;
+
 	/** Appends a vocabulary chip's phrase to the description box. */
 	FReply OnInsertPhrase(FString Phrase);
 
@@ -47,6 +63,10 @@ private:
 	TSharedRef<SWidget> MakeOptionCombo(TArray<TSharedPtr<FString>>& Options, int32& SelectedIndex);
 
 	TSharedPtr<IShotPlanProvider> Provider;
+
+	/** A model-backed plan request is outstanding; the Create button stays disabled. */
+	bool bRequestInFlight = false;
+
 	TSharedPtr<SMultiLineEditableTextBox> DescriptionBox;
 	TSharedPtr<SCheckBox> ContinuousCheck;
 	TSharedPtr<STextBlock> StatusBlock;

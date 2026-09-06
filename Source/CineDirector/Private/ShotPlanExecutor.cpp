@@ -46,58 +46,62 @@ DEFINE_LOG_CATEGORY_STATIC(LogCineDirector, Log, All);
 
 namespace CineDirectorExec
 {
-	/**
-	 * Mid-face world location on a skeletal actor (VRM/MMD/Mixamo/UE void kits).
-	 * Prefers eye midpoint → head/neck blend → head bone. Nudges slightly along
-	 * actor forward so aim hits the face surface (grills/nose), not skull center.
-	 */
-	bool FindHeadWorldLocation(const AActor* Actor, FVector& OutHead)
+	static const FName GLeftEyeBones[] = {
+		FName(TEXT("eye_L")), FName(TEXT("Eye_L")), FName(TEXT("LeftEye")),
+		FName(TEXT("leftEye")), FName(TEXT("EyeLeft")), FName(TEXT("mixamorig:LeftEye")),
+		FName(TEXT("J_Adj_L_FaceEye")), FName(TEXT("faceeye_L")),
+	};
+	static const FName GRightEyeBones[] = {
+		FName(TEXT("eye_R")), FName(TEXT("Eye_R")), FName(TEXT("RightEye")),
+		FName(TEXT("rightEye")), FName(TEXT("EyeRight")), FName(TEXT("mixamorig:RightEye")),
+		FName(TEXT("J_Adj_R_FaceEye")), FName(TEXT("faceeye_R")),
+	};
+	static const FName GHeadBones[] = {
+		FName(TEXT("head")), FName(TEXT("Head")), FName(TEXT("HEAD")),
+		FName(TEXT("Head_M")), FName(TEXT("head_M")), FName(TEXT("J_Bip_C_Head")),
+		FName(TEXT("j_bip_c_head")), FName(TEXT("mixamorig:Head")), FName(TEXT("mixamorig_Head")),
+		FName(TEXT("Bip001-Head")), FName(TEXT("Bip001 Head")), FName(TEXT("Bip01 Head")),
+		FName(TEXT("bone_head")), FName(TEXT("J_Head")), FName(TEXT("Face")), FName(TEXT("face")),
+	};
+	static const FName GNeckBones[] = {
+		FName(TEXT("neck")), FName(TEXT("Neck")), FName(TEXT("J_Bip_C_Neck")),
+		FName(TEXT("j_bip_c_neck")), FName(TEXT("mixamorig:Neck")), FName(TEXT("mixamorig_Neck")),
+		FName(TEXT("Bip001-Neck")), FName(TEXT("Bip001 Neck")),
+	};
+
+	bool TrySkelBoneLocation(USkeletalMeshComponent* Skel, const FName& Bone, FVector& Out)
 	{
-		if (!Actor)
+		if (!Skel)
 		{
 			return false;
 		}
+		if (Skel->GetBoneIndex(Bone) != INDEX_NONE)
+		{
+			Out = Skel->GetBoneLocation(Bone);
+			return true;
+		}
+		if (Skel->DoesSocketExist(Bone))
+		{
+			Out = Skel->GetSocketLocation(Bone);
+			return true;
+		}
+		return false;
+	}
 
-		static const FName PreferredBones[] = {
-			FName(TEXT("head")),
-			FName(TEXT("Head")),
-			FName(TEXT("HEAD")),
-			FName(TEXT("Head_M")),
-			FName(TEXT("head_M")),
-			FName(TEXT("J_Bip_C_Head")),
-			FName(TEXT("j_bip_c_head")),
-			FName(TEXT("mixamorig:Head")),
-			FName(TEXT("mixamorig_Head")),
-			FName(TEXT("Bip001-Head")),
-			FName(TEXT("Bip001 Head")),
-			FName(TEXT("Bip01 Head")),
-			FName(TEXT("bone_head")),
-			FName(TEXT("J_Head")),
-			FName(TEXT("Face")),
-			FName(TEXT("face")),
-		};
+	/**
+	 * Horizontal unit vector the character's FACE points (void/VRM-safe).
+	 * Root / mesh component yaw is often 90° or 180° off the mesh (void FBX).
+	 * Prefer eyes for the axis; lock the sign with eyes-out-of-head (true face),
+	 * never mesh-component forward — that locked front↔back inverted on voids.
+	 */
+	FVector ResolveCharacterFacingDir(const AActor* Actor)
+	{
+		if (!Actor)
+		{
+			return FVector::ForwardVector;
+		}
 
-		static const FName NeckBones[] = {
-			FName(TEXT("neck")),
-			FName(TEXT("Neck")),
-			FName(TEXT("J_Bip_C_Neck")),
-			FName(TEXT("j_bip_c_neck")),
-			FName(TEXT("mixamorig:Neck")),
-			FName(TEXT("mixamorig_Neck")),
-			FName(TEXT("Bip001-Neck")),
-			FName(TEXT("Bip001 Neck")),
-		};
-
-		static const FName LeftEyeBones[] = {
-			FName(TEXT("eye_L")), FName(TEXT("Eye_L")), FName(TEXT("LeftEye")),
-			FName(TEXT("leftEye")), FName(TEXT("EyeLeft")), FName(TEXT("mixamorig:LeftEye")),
-			FName(TEXT("J_Adj_L_FaceEye")), FName(TEXT("faceeye_L")),
-		};
-		static const FName RightEyeBones[] = {
-			FName(TEXT("eye_R")), FName(TEXT("Eye_R")), FName(TEXT("RightEye")),
-			FName(TEXT("rightEye")), FName(TEXT("EyeRight")), FName(TEXT("mixamorig:RightEye")),
-			FName(TEXT("J_Adj_R_FaceEye")), FName(TEXT("faceeye_R")),
-		};
+		const FVector ActorFwd = Actor->GetActorForwardVector().GetSafeNormal2D();
 
 		TArray<USkeletalMeshComponent*> Meshes;
 		Actor->GetComponents<USkeletalMeshComponent>(Meshes);
@@ -108,47 +112,167 @@ namespace CineDirectorExec
 				continue;
 			}
 
-			auto TryBone = [Skel](const FName& Bone, FVector& Out) -> bool
+			FVector EyeL = FVector::ZeroVector, EyeR = FVector::ZeroVector;
+			bool bL = false, bR = false;
+			for (const FName& Bone : GLeftEyeBones)
 			{
-				if (Skel->GetBoneIndex(Bone) != INDEX_NONE)
+				if (TrySkelBoneLocation(Skel, Bone, EyeL)) { bL = true; break; }
+			}
+			for (const FName& Bone : GRightEyeBones)
+			{
+				if (TrySkelBoneLocation(Skel, Bone, EyeR)) { bR = true; break; }
+			}
+
+			// Eyes sit slightly in front of the skull — best face-out prior on voids.
+			FVector FaceOutPrior = FVector::ZeroVector;
+			FVector HeadLoc = FVector::ZeroVector;
+			FName HeadBoneName;
+			bool bFoundHead = false;
+			for (const FName& Bone : GHeadBones)
+			{
+				if (TrySkelBoneLocation(Skel, Bone, HeadLoc))
 				{
-					Out = Skel->GetBoneLocation(Bone);
-					return true;
+					HeadBoneName = Bone;
+					bFoundHead = true;
+					break;
 				}
-				// Sockets (some VRM exports expose face markers as sockets only).
-				if (Skel->DoesSocketExist(Bone))
+			}
+			if (bL && bR && bFoundHead)
+			{
+				FaceOutPrior = (((EyeL + EyeR) * 0.5) - HeadLoc).GetSafeNormal2D();
+			}
+
+			if (bL && bR)
+			{
+				FVector Right = (EyeR - EyeL).GetSafeNormal();
+				// UE left-handed: Forward = Right × Up.
+				FVector Fwd = FVector::CrossProduct(Right, FVector::UpVector).GetSafeNormal2D();
+				if (Fwd.IsNearlyZero())
 				{
-					Out = Skel->GetSocketLocation(Bone);
-					return true;
+					continue;
 				}
-				return false;
-			};
+				// Sign lock: face-out (eyes vs head). If that is flat, try actor
+				// forward hemisphere — never mesh component forward (often 180° off).
+				if (!FaceOutPrior.IsNearlyZero())
+				{
+					if (FVector::DotProduct(Fwd, FaceOutPrior) < 0.0)
+					{
+						Fwd = -Fwd;
+					}
+				}
+				else if (!ActorFwd.IsNearlyZero()
+					&& FVector::DotProduct(Fwd, ActorFwd) < 0.0)
+				{
+					Fwd = -Fwd;
+				}
+				return Fwd;
+			}
+
+			// No eyes: head-bone axis closest to face-out or actor forward (not mesh fwd).
+			const FVector AxisPrior = !FaceOutPrior.IsNearlyZero()
+				? FaceOutPrior
+				: (ActorFwd.IsNearlyZero() ? FVector::ForwardVector : ActorFwd);
+
+			if (bFoundHead && Skel->GetBoneIndex(HeadBoneName) != INDEX_NONE)
+			{
+				const FTransform HeadTM = Skel->GetBoneTransform(HeadBoneName);
+				const FVector Candidates[] = {
+					HeadTM.GetUnitAxis(EAxis::X),
+					-HeadTM.GetUnitAxis(EAxis::X),
+					HeadTM.GetUnitAxis(EAxis::Y),
+					-HeadTM.GetUnitAxis(EAxis::Y),
+					HeadTM.GetUnitAxis(EAxis::Z),
+					-HeadTM.GetUnitAxis(EAxis::Z),
+					AxisPrior,
+				};
+				FVector Best = AxisPrior;
+				double BestDot = -1.0e12;
+				for (FVector C : Candidates)
+				{
+					C.Z = 0.0;
+					if (!C.Normalize())
+					{
+						continue;
+					}
+					const double D = FVector::DotProduct(C, AxisPrior);
+					if (D > BestDot)
+					{
+						BestDot = D;
+						Best = C;
+					}
+				}
+				if (!Best.IsNearlyZero())
+				{
+					return Best;
+				}
+			}
+
+			if (!AxisPrior.IsNearlyZero())
+			{
+				return AxisPrior;
+			}
+		}
+
+		return ActorFwd.IsNearlyZero() ? FVector::ForwardVector : ActorFwd;
+	}
+
+	double FacingYawDegrees(const FVector& FacingDir)
+	{
+		const FVector D = FacingDir.GetSafeNormal2D();
+		if (D.IsNearlyZero())
+		{
+			return 0.0;
+		}
+		return FMath::RadiansToDegrees(FMath::Atan2(D.Y, D.X));
+	}
+
+	/**
+	 * Mid-face world location on a skeletal actor (VRM/MMD/Mixamo/UE void kits).
+	 * Prefers eye midpoint → head/neck blend → head bone. Nudges along *face*
+	 * forward (not root yaw) so aim hits grills/nose, not a side of the skull.
+	 */
+	bool FindHeadWorldLocation(const AActor* Actor, FVector& OutHead)
+	{
+		if (!Actor)
+		{
+			return false;
+		}
+
+		const FVector FaceFwd = ResolveCharacterFacingDir(Actor);
+
+		TArray<USkeletalMeshComponent*> Meshes;
+		Actor->GetComponents<USkeletalMeshComponent>(Meshes);
+		for (USkeletalMeshComponent* Skel : Meshes)
+		{
+			if (!Skel || !Skel->GetSkeletalMeshAsset())
+			{
+				continue;
+			}
 
 			// 1) Eyes = strongest face lock (void grills / glasses read correctly).
 			FVector EyeL = FVector::ZeroVector, EyeR = FVector::ZeroVector;
 			bool bL = false, bR = false;
-			for (const FName& Bone : LeftEyeBones)
+			for (const FName& Bone : GLeftEyeBones)
 			{
-				if (TryBone(Bone, EyeL)) { bL = true; break; }
+				if (TrySkelBoneLocation(Skel, Bone, EyeL)) { bL = true; break; }
 			}
-			for (const FName& Bone : RightEyeBones)
+			for (const FName& Bone : GRightEyeBones)
 			{
-				if (TryBone(Bone, EyeR)) { bR = true; break; }
+				if (TrySkelBoneLocation(Skel, Bone, EyeR)) { bR = true; break; }
 			}
 			if (bL && bR)
 			{
-				// Mid-eyes, drop slightly toward nose / grills.
 				OutHead = (EyeL + EyeR) * 0.5;
 				OutHead.Z -= 4.0;
-				OutHead += Actor->GetActorForwardVector() * 6.0;
+				OutHead += FaceFwd * 6.0;
 				return true;
 			}
 
 			FVector HeadLoc = FVector::ZeroVector;
 			bool bFoundHead = false;
-			for (const FName& Bone : PreferredBones)
+			for (const FName& Bone : GHeadBones)
 			{
-				if (TryBone(Bone, HeadLoc))
+				if (TrySkelBoneLocation(Skel, Bone, HeadLoc))
 				{
 					bFoundHead = true;
 					break;
@@ -157,7 +281,6 @@ namespace CineDirectorExec
 
 			if (!bFoundHead)
 			{
-				// Fuzzy fallback: first bone whose name contains "head" (not ends/nubs).
 				const FReferenceSkeleton& RefSkel = Skel->GetSkeletalMeshAsset()->GetRefSkeleton();
 				const int32 NumBones = RefSkel.GetNum();
 				int32 BestIdx = INDEX_NONE;
@@ -193,12 +316,11 @@ namespace CineDirectorExec
 				continue;
 			}
 
-			// VRM / void head bones sit high. Prefer mid-face (eyes–nose), not throat.
 			FVector NeckLoc = HeadLoc;
 			bool bFoundNeck = false;
-			for (const FName& Bone : NeckBones)
+			for (const FName& Bone : GNeckBones)
 			{
-				if (TryBone(Bone, NeckLoc))
+				if (TrySkelBoneLocation(Skel, Bone, NeckLoc))
 				{
 					bFoundNeck = true;
 					break;
@@ -206,7 +328,6 @@ namespace CineDirectorExec
 			}
 			if (bFoundNeck)
 			{
-				// Bias toward head (0.62) so we stay on the face, not upper chest.
 				OutHead = FMath::Lerp(NeckLoc, HeadLoc, 0.62);
 			}
 			else
@@ -214,8 +335,7 @@ namespace CineDirectorExec
 				OutHead = HeadLoc;
 				OutHead.Z -= 8.0;
 			}
-			// Push onto the front of the face mesh (void muzzles / grills stick forward).
-			OutHead += Actor->GetActorForwardVector() * 8.0;
+			OutHead += FaceFwd * 8.0;
 			return true;
 		}
 		return false;
@@ -281,8 +401,8 @@ namespace CineDirectorExec
 	};
 
 	/**
-	 * Always mid-face when a head exists. Used for follow/aim so tracking never
-	 * drifts to hips / body mass while the character animates.
+	 * Mid-face point when a head exists. For tight CUs / focus only —
+	 * slight CUs use ResolveSubjectFraming (chest-up).
 	 */
 	FVector ResolveFaceInterestPoint(const AActor* Actor)
 	{
@@ -295,7 +415,6 @@ namespace CineDirectorExec
 		{
 			return Face;
 		}
-		// No head bone: upper-third of bounds (chest/face band), not body center.
 		return BoundsHeightPoint(Actor, 0.88);
 	}
 
@@ -316,13 +435,11 @@ namespace CineDirectorExec
 		FVector HeadLoc = BodyCenter;
 		const bool bHasHead = FindHeadWorldLocation(Actor, HeadLoc);
 		Out.bHead = bHasHead;
-		// Face interest is always the mid-face point when available.
 		const FVector FacePoint = bHasHead ? HeadLoc : BoundsHeightPoint(Actor, 0.88);
 
 		switch (Size)
 		{
 		case ECineShotSize::ExtremeCloseUp:
-			// Whole face tight (eyes through chin/grills) — not forehead crop.
 			Out.Point = FacePoint;
 			Out.Radius = bHasHead
 				? FMath::Clamp(BodyRadius * 0.22, 16.0, 40.0)
@@ -330,36 +447,49 @@ namespace CineDirectorExec
 			break;
 
 		case ECineShotSize::CloseUp:
-			// Full face + a little headroom/chin room (void grills, glasses, etc.).
-			Out.Point = FacePoint;
-			Out.Radius = bHasHead
-				? FMath::Clamp(BodyRadius * 0.34, 26.0, 62.0)
-				: BodyRadius * 0.30;
-			break;
-
-		case ECineShotSize::MediumCloseUp:
-			// Chest-up distance, but still aim at the face (not sternum).
+			// Full face, not skull-only — keep chin/grills and a little air.
 			Out.Point = FacePoint;
 			if (bHasHead)
 			{
-				// Tiny drop so shoulders can read without losing the face lock.
-				Out.Point.Z -= FMath::Clamp(BodyRadius * 0.03, 3.0, 12.0);
+				Out.Point.Z -= FMath::Clamp(BodyRadius * 0.02, 2.0, 8.0);
 			}
-			Out.Radius = BodyRadius * 0.42;
+			Out.Radius = bHasHead
+				? FMath::Clamp(BodyRadius * 0.38, 30.0, 70.0)
+				: BodyRadius * 0.32;
+			break;
+
+		case ECineShotSize::MediumCloseUp:
+			// Slight close-up: chest-up — face in frame, shoulders read (not head-lock).
+			if (bHasHead)
+			{
+				Out.Point = FMath::Lerp(BodyCenter, FacePoint, 0.62);
+			}
+			else
+			{
+				Out.Point = BoundsHeightPoint(Actor, 0.78);
+			}
+			Out.Radius = BodyRadius * 0.48;
 			break;
 
 		case ECineShotSize::Medium:
-			// Still face-biased so follow doesn't sit on the belly.
 			Out.Point = bHasHead
-				? FMath::Lerp(BodyCenter, FacePoint, 0.85)
-				: BoundsHeightPoint(Actor, 0.70);
+				? FMath::Lerp(BodyCenter, FacePoint, 0.45)
+				: BoundsHeightPoint(Actor, 0.62);
 			Out.Radius = BodyRadius * 0.72;
 			break;
 
 		case ECineShotSize::Unspecified:
-			// Default character framing: face lock, not pelvis.
-			Out.Point = FacePoint;
-			Out.Radius = bHasHead ? BodyRadius * 0.55 : BodyRadius;
+			// Default character: upper body, face-biased — not glued to skull.
+			if (bHasHead)
+			{
+				Out.Point = FMath::Lerp(BodyCenter, FacePoint, 0.70);
+				Out.Radius = BodyRadius * 0.65;
+			}
+			else
+			{
+				Out.Point = BodyCenter;
+				Out.Radius = BodyRadius;
+			}
 			break;
 
 		case ECineShotSize::Wide:
@@ -431,19 +561,17 @@ namespace CineDirectorExec
 			Geo.Radius = Frame.Radius;
 
 			// Two frames of reference for sides:
-			//  - Possessive ("its left") uses the actor's own root rotation — right
-			//    for characters, whose facing is usually authored correctly.
-			//  - Plain ("from the left") is viewer-relative: "front" is the side of
-			//    the actor facing the editor viewport right now, left/right are
-			//    screen left/right — predictable for props whose root rotation is
-			//    arbitrary.
-			// "Left" swings the azimuth opposite ways because the viewer looks
-			// toward the subject while the actor looks away from its own front.
+			//  - Possessive ("its front/left") uses the *face* forward (eyes/head),
+			//    not root yaw — void/VRM roots are often 90° off the mesh.
+			//  - Plain ("from the left") is viewer-relative: front = side of the
+			//    actor facing the editor viewport right now.
+			// "Left" swings opposite ways because the viewer looks toward the
+			// subject while the character faces out from their own front.
 			double FacingYaw;
 			double LeftSwingDeg;
 			if (Seg.bActorRelativeSide)
 			{
-				FacingYaw = Target->GetActorRotation().Yaw;
+				FacingYaw = FacingYawDegrees(ResolveCharacterFacingDir(Target));
 				LeftSwingDeg = -90.0;
 			}
 			else
@@ -454,6 +582,8 @@ namespace CineDirectorExec
 			}
 			switch (Seg.ViewSide)
 			{
+			// Camera sits along this world azimuth from the face, looking back at it.
+			// Front = in front of the face (along face forward).
 			case ECineViewSide::Front:        Geo.AzimuthDeg = FacingYaw; break;
 			case ECineViewSide::Behind:       Geo.AzimuthDeg = FacingYaw + 180.0; break;
 			case ECineViewSide::Left:         Geo.AzimuthDeg = FacingYaw + LeftSwingDeg; break;
@@ -543,14 +673,17 @@ namespace CineDirectorExec
 		return Geo;
 	}
 
-	/** Offset from actor origin so tracking focus locks on the face (not body mass). */
-	FVector TrackingFocusOffset(const AActor* Actor, ECineShotSize /*Size*/)
+	/** Offset from actor origin for DOF — face on CU, framing point otherwise. */
+	FVector TrackingFocusOffset(const AActor* Actor, ECineShotSize Size)
 	{
 		if (!Actor)
 		{
 			return FVector::ZeroVector;
 		}
-		return ResolveFaceInterestPoint(Actor) - Actor->GetActorLocation();
+		const FVector Interest = (Size == ECineShotSize::ExtremeCloseUp || Size == ECineShotSize::CloseUp)
+			? ResolveFaceInterestPoint(Actor)
+			: ResolveSubjectFraming(Actor, Size).Point;
+		return Interest - Actor->GetActorLocation();
 	}
 
 	/** Prefer explicit look-at subject, else the shot's pivot target. */
@@ -563,12 +696,12 @@ namespace CineDirectorExec
 		return Seg.TargetActor.Get();
 	}
 
-	/** World-space interest point DOF should hit for this segment (always face when possible). */
+	/** World-space interest point DOF should hit for this segment. */
 	FVector ResolveFocusPoint(const FCineShotSegment& Seg, const FShotGeometry& Geo)
 	{
 		if (AActor* FocusActor = ResolveFocusActor(Seg))
 		{
-			return ResolveFaceInterestPoint(FocusActor);
+			return ResolveSubjectFraming(FocusActor, EffectiveShotSize(Seg)).Point;
 		}
 		if (Geo.bHasLookAt || Geo.bHasTarget)
 		{
@@ -794,24 +927,25 @@ namespace CineDirectorExec
 			HoldDistance = Geo.Distance;
 			HoldElevationDeg = Geo.ElevationDeg;
 
-			// Face-front relative: store azimuth relative to the actor's facing so
-			// "from its front" stays on the face as they turn (not a world-fixed side).
+			// Face-front relative: capture face forward ONCE at setup, then rotate it
+			// with the actor root. Re-solving eyes every sample flipped front↔back.
 			if (AActor* SpaceActor = Seg.TargetActor.IsValid() ? Seg.TargetActor.Get() : Seg.LookAtActor.Get())
 			{
-				SetupActorYaw = SpaceActor->GetActorRotation().Yaw;
-				RelAzimuthToFacing = Geo.AzimuthDeg - SetupActorYaw;
-				// Prefer face-relative spherical for any subject follow (holds + orbits).
-				bFaceRelative = Seg.bFollowSubjectPosition || Seg.bActorRelativeSide
-					|| Seg.ViewSide == ECineViewSide::Front;
+				SetupFacingYaw = FacingYawDegrees(ResolveCharacterFacingDir(SpaceActor));
+				SetupRootYaw = SpaceActor->GetActorRotation().Yaw;
+				RelAzimuthToFacing = Geo.AzimuthDeg - SetupFacingYaw;
+				bFaceRelative = Seg.bActorRelativeSide
+					|| (Seg.bFollowSubjectPosition && Seg.ViewSide == ECineViewSide::Front);
 			}
 		}
 
 		bool bFollowSubject = false;
-		/** Rebuild camera on a sphere around the live face, relative to actor yaw. */
+		/** Rebuild camera on a sphere around the subject, relative to face forward at setup. */
 		bool bFaceRelative = false;
 		FVector RelOffsetFromTarget = FVector::ZeroVector;
 		double RelAzimuthToFacing = 0.0;
-		double SetupActorYaw = 0.0;
+		double SetupFacingYaw = 0.0;
+		double SetupRootYaw = 0.0;
 		double HoldDistance = 100.0;
 		double HoldElevationDeg = 0.0;
 
@@ -825,49 +959,35 @@ namespace CineDirectorExec
 			return Seg.LookAtActor.Get();
 		}
 
-		/** World azimuth that keeps the same side of the face as at setup. */
+		/**
+		 * World azimuth that keeps the same side of the character as at setup.
+		 * Uses setup face-forward + root yaw delta (stable — no per-sample eye re-solve).
+		 */
 		double LiveAzimuth(double OrbitDeltaDeg = 0.0) const
 		{
 			if (bFaceRelative)
 			{
 				if (AActor* A = SpaceActor())
 				{
-					return A->GetActorRotation().Yaw + RelAzimuthToFacing + OrbitDeltaDeg;
+					const double LiveRootYaw = A->GetActorRotation().Yaw;
+					const double LiveFacingYaw = SetupFacingYaw + (LiveRootYaw - SetupRootYaw);
+					return LiveFacingYaw + RelAzimuthToFacing + OrbitDeltaDeg;
 				}
 			}
 			return Geo.AzimuthDeg + OrbitDeltaDeg;
 		}
 
 		/**
-		 * @param LiveTarget  Animated face interest. Falls back to Geo.TargetPoint.
-		 * @param LiveAim     Animated aim (face). Falls back to Geo.AimPoint / LiveTarget.
+		 * @param LiveTarget  Shot-size framing pivot (face on CU, chest-up on slight CU).
+		 * @param LiveAim     Aim point (same unless explicit look-at).
 		 */
 		void Sample(double TMove, double TReal, FVector& OutPos, FRotator& OutRot,
 			const FVector* LiveTarget = nullptr, const FVector* LiveAim = nullptr) const
 		{
-			// Always pivot/aim on the live face when following — never body mass.
+			// Trust live framing from shot size — do NOT force mid-face every sample
+			// (that glued slight CUs to the skull).
 			FVector Target = LiveTarget ? *LiveTarget : Geo.TargetPoint;
 			FVector Aim = LiveAim ? *LiveAim : (Geo.bHasLookAt ? Geo.AimPoint : Target);
-			if (bFollowSubject)
-			{
-				if (AActor* FaceActor = SpaceActor())
-				{
-					const FVector Face = ResolveFaceInterestPoint(FaceActor);
-					if (!Face.IsNearlyZero())
-					{
-						Target = Face;
-						// Aim at face unless an explicit different look-at actor is set.
-						if (!Seg.LookAtActor.IsValid() || Seg.LookAtActor == Seg.TargetActor)
-						{
-							Aim = Face;
-						}
-					}
-				}
-				if (Seg.LookAtActor.IsValid() && Seg.LookAtActor != Seg.TargetActor)
-				{
-					Aim = ResolveFaceInterestPoint(Seg.LookAtActor.Get());
-				}
-			}
 
 			const double Amount = Seg.MoveAmount;
 			double Dist = Geo.Distance;
@@ -1092,24 +1212,24 @@ namespace CineDirectorExec
 		}
 	}
 
-	/** Live face / aim points for a segment after evaluating the sequence. */
+	/** Live pivot / aim for a segment after evaluating the sequence (respects shot size). */
 	void ResolveLiveFraming(const FCineShotSegment& Seg, FVector& OutTarget, FVector& OutAim)
 	{
 		OutTarget = FVector::ZeroVector;
 		OutAim = FVector::ZeroVector;
+		const ECineShotSize Size = EffectiveShotSize(Seg);
 
-		// Always resolve mid-face for follow/aim — shot size only affects distance (radius),
-		// not which body part we lock onto.
 		if (AActor* Target = Seg.TargetActor.Get())
 		{
 			RefreshActorBones(Target);
-			OutTarget = ResolveFaceInterestPoint(Target);
+			// Slight CU → chest-up; CU → face; never hips.
+			OutTarget = ResolveSubjectFraming(Target, Size).Point;
 			OutAim = OutTarget;
 		}
 		if (AActor* Look = Seg.LookAtActor.Get())
 		{
 			RefreshActorBones(Look);
-			OutAim = ResolveFaceInterestPoint(Look);
+			OutAim = ResolveSubjectFraming(Look, Size).Point;
 			if (OutTarget.IsNearlyZero())
 			{
 				OutTarget = OutAim;
@@ -1856,7 +1976,11 @@ namespace CineDirectorExec
 		for (const FGuid& Guid : Ordered)
 		{
 			TArray<UObject*, TInlineAllocator<1>> BoundObjects;
-			Sequence->LocateBoundObjects(Guid, World, BoundObjects);
+			Sequence->LocateBoundObjects(
+				Guid,
+				UE::UniversalObjectLocator::FResolveParams(World),
+				nullptr,
+				BoundObjects);
 			for (UObject* Obj : BoundObjects)
 			{
 				if (AActor* Actor = Cast<AActor>(Obj))

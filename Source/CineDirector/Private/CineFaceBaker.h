@@ -57,6 +57,13 @@ struct FCineFaceBakeRequest
 	 * consonants snap and vowels peak harder (stage enunciation).
 	 */
 	float Articulation = 1.0f;
+
+	/**
+	 * When false (default), reuses / overwrites /Game/CineDirector/FaceAnims/<Mesh>_Face
+	 * so iterative bakes do not pile up assets. When true, creates a unique
+	 * timestamped take for archival.
+	 */
+	bool bKeepAsNewTake = false;
 };
 
 /**
@@ -67,7 +74,13 @@ struct FCineFaceBakeRequest
 class FCineFaceBaker
 {
 public:
-	/** Creates the /Game/CineDirector/FaceAnims asset. Null + OutError on failure. */
+	/** Content folder for baked face takes. */
+	static const TCHAR* FaceAnimFolder() { return TEXT("/Game/CineDirector/FaceAnims"); }
+
+	/**
+	 * Creates or reuses a /Game/CineDirector/FaceAnims asset, then saves only
+	 * that package. Null + OutError on failure.
+	 */
 	static UAnimSequence* BakeAnimAsset(const FCineFaceBakeRequest& Request, FString& OutError);
 
 	/** Imports a .wav into /Game/CineDirector/Audio for Sequencer playback. */
@@ -76,9 +89,20 @@ public:
 	/**
 	 * Adds the face animation (and optional audio) to the current Level
 	 * Sequence at the playback start, bound to the actor's skeletal mesh
-	 * component. One undo transaction.
+	 * component. Reuses an existing section that already points at the same
+	 * asset (or any prior CineDirector face take on the track) instead of
+	 * stacking duplicates. One undo transaction.
 	 */
 	static bool AddToSequencer(AActor* Actor, UAnimSequence* FaceAnim, USoundWave* Audio, FString& OutError);
+
+	/**
+	 * Deletes FaceAnims assets with no package referencers (not used by any
+	 * sequence/map). Returns how many assets were removed.
+	 */
+	static int32 PurgeUnusedFaceAnims(FString& OutMessage);
+
+	/** Clears Saved/CineDirectorFace stem / conversion cache. Returns files removed. */
+	static int32 ClearFaceCache(FString& OutMessage);
 
 	/** The emotion vocabulary, for help text ("scared, angry, happy, ..."). */
 	static FString GetEmotionVocabulary();

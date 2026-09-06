@@ -10,10 +10,13 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
 #include "HAL/IConsoleManager.h"
+#include "LlmShotPlanProvider.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "SCineDirectorPanel.h"
 #include "ShotGrammarParser.h"
+#include "ShotPlanExecutor.h"
+#include "ShotPlanJson.h"
 #include "Styling/AppStyle.h"
 #include "Textures/SlateIcon.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -29,7 +32,9 @@ class FCineDirectorModule : public IModuleInterface
 public:
 	virtual void StartupModule() override
 	{
-		Provider = MakeShared<FShotGrammarParser>();
+		// The router picks the offline parser or a model backend per request, so the
+		// Project Settings choice applies without restarting the editor.
+		Provider = MakeShared<FShotPlanProviderRouter>();
 
 		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
 			CineDirectorTabName,
@@ -46,6 +51,14 @@ public:
 			TEXT("Authors a prompted body performance for a skeletal mesh by name: CineDirector.AuthorBody DegenGrills sitting smoking nervous"),
 			FConsoleCommandWithArgsDelegate::CreateStatic(&FCineDirectorModule::AuthorBodyCommand),
 			ECVF_Default);
+
+		// Read-only: asks the configured backend for a plan and logs it without
+		// spawning cameras, so a backend can be checked without Sequencer open.
+		PlanCommand = IConsoleManager::Get().RegisterConsoleCommand(
+			TEXT("CineDirector.PlanShots"),
+			TEXT("Plans shots from a description and logs the result without executing it: CineDirector.PlanShots slow orbit around the hero, 85mm"),
+			FConsoleCommandWithArgsDelegate::CreateRaw(this, &FCineDirectorModule::PlanShotsCommand),
+			ECVF_Default);
 	}
 
 	virtual void ShutdownModule() override
@@ -55,10 +68,43 @@ public:
 			IConsoleManager::Get().UnregisterConsoleObject(BodyCommand);
 			BodyCommand = nullptr;
 		}
+		if (PlanCommand)
+		{
+			IConsoleManager::Get().UnregisterConsoleObject(PlanCommand);
+			PlanCommand = nullptr;
+		}
 		if (FSlateApplication::IsInitialized())
 		{
 			FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(CineDirectorTabName);
 		}
+	}
+
+	/** CineDirector.PlanShots <description...> — plan and log, change nothing. */
+	void PlanShotsCommand(const TArray<FString>& Args)
+	{
+		const FString Description = FString::Join(Args, TEXT(" "));
+		if (Description.IsEmpty() || !Provider.IsValid())
+		{
+			UE_LOG(LogTemp, Error, TEXT("Usage: CineDirector.PlanShots <description...>"));
+			return;
+		}
+
+		const FCineSceneContext Scene = FShotPlanExecutor::BuildSceneContext();
+		UE_LOG(LogTemp, Display, TEXT("CineDirector.PlanShots: asking %s for \"%s\" (%d actors in scene)"),
+			*Provider->GetProviderName().ToString(), *Description, Scene.Actors.Num());
+
+		Provider->BuildShotPlanAsync(Description, Scene,
+			FCineShotPlanReady::CreateLambda(
+				[](bool bSuccess, const FCineShotPlan& Plan, const FText& Error)
+				{
+					if (!bSuccess)
+					{
+						UE_LOG(LogTemp, Error, TEXT("CineDirector.PlanShots failed: %s"), *Error.ToString());
+						return;
+					}
+					UE_LOG(LogTemp, Display, TEXT("CineDirector.PlanShots result — %s"),
+						*FCineShotPlanJson::DescribePlan(Plan));
+				}));
 	}
 
 	static void AuthorBodyCommand(const TArray<FString>& Args)
@@ -118,7 +164,10 @@ public:
 		if (CineBodyRigOps::Bake(Rig, Anim, TEXT("/Game/CineDirector/BodyAnims"), Packages, Error))
 		{
 			CineBodyRigOps::WritePreviewSheet(Rig, Anim, FPaths::ProjectSavedDir() / TEXT("CineDirectorBody"));
-			UEditorLoadingAndSavingUtils::SaveDirtyPackages(false, true);
+			if (Packages.Num() > 0)
+			{
+				UEditorLoadingAndSavingUtils::SavePackages(Packages, /*bOnlyDirty*/ false);
+			}
 		}
 		else
 		{
@@ -139,6 +188,7 @@ private:
 
 	TSharedPtr<IShotPlanProvider> Provider;
 	IConsoleCommand* BodyCommand = nullptr;
+	IConsoleCommand* PlanCommand = nullptr;
 };
 
 IMPLEMENT_MODULE(FCineDirectorModule, CineDirector)

@@ -54,6 +54,52 @@ Highlights beyond the basics:
   sun, fog words key height fog, plus god rays and volumetric fog; with a
   SkyAtmosphere in the level the sky is driven physically.
 
+## Model backends
+
+Out of the box the prompt is read by the built-in grammar parser: offline,
+deterministic, no key, nothing leaves the machine. Point it at a language model
+instead and the same panel handles free-form direction — "she realises he's been
+lying to her; play it cold" — instead of a fixed vocabulary.
+
+**Project Settings ▸ Plugins ▸ CineDirector** picks the backend:
+
+| Backend | Endpoint | Key |
+| --- | --- | --- |
+| Offline grammar | — | none |
+| Anthropic (Claude) | `api.anthropic.com/v1/messages` | `ANTHROPIC_API_KEY` |
+| OpenAI | `api.openai.com/v1/chat/completions` | `OPENAI_API_KEY` |
+| OpenRouter | `openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` |
+| Local model (Ollama / LM Studio) | `localhost:11434/v1/chat/completions` | none |
+| Google Gemini | `generativelanguage.googleapis.com` | `GEMINI_API_KEY` |
+| Custom (OpenAI-compatible) | whatever you set | optional |
+
+Keys are read from the environment variable first — leave the **API key** field
+empty and nothing sensitive is stored. If you'd rather keep it on disk, put it in
+`<Project>/Saved/CineDirector/<Backend>.key`. The field in Project Settings is a
+third option; it is written to your per-user editor ini, never the shared project
+config.
+
+Only Anthropic, OpenAI and Gemini have a built-in default model id. For
+OpenRouter, a local server, or a custom endpoint, type the **Model** id the way
+that service spells it (`anthropic/claude-sonnet-4.5`, `llama3.1`, …). The
+**Endpoint URL override** covers self-hosted models, proxies and non-default
+ports.
+
+The model does not free-form the result: it fills in a strict schema — the same
+segment fields the grammar parser produces (move, framing, angle, lens, focus,
+timing, handheld, grade, time of day) — which is sent as a structured-output
+constraint where the backend supports one, then resolved against the level's
+actual actor labels. Anything the model asks for that isn't in the level, or is
+out of range, gets clamped or dropped and reported in the shot notes rather than
+silently applied.
+
+The level's actor labels, positions and bounds are sent as context so shots can
+name subjects; turn off **Send scene actors** and shots are framed from the
+viewport instead. If a request fails — no key, no network, an unparseable reply —
+the offline parser answers instead and the notes say why, so the panel never
+just stops working. Turn on **Log request / response bodies** to see the exact
+traffic in the output log (keys are never logged).
+
 ## Rendering
 
 The **Render (Movie Render Queue)** section renders the open sequence with your
@@ -176,6 +222,13 @@ The result is a curves-only **additive** animation asset layered onto the
 character in the open Level Sequence — it carries no bone data, so the body
 animation underneath keeps playing and only the face moves. Face and body work
 together with zero setup.
+
+**Storage:** by default each generate **overwrites** one working asset per mesh
+(`/Game/CineDirector/FaceAnims/<Mesh>_Face`) instead of creating a unique
+timestamped file every time. Tick **Keep each take as a new asset** only when
+you want to archive a final. **Purge unused face anims** deletes drafts under
+that folder that no sequence or map still references. **Clear voice-isolation
+cache** removes `Saved/CineDirectorFace` (Demucs stems / ffmpeg conversions).
 
 ## Auto Retarget (IK Rig)
 

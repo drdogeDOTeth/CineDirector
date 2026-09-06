@@ -3,8 +3,11 @@
 ## Data and provider layer
 
 - `ShotPlanTypes.h`: `FCineShotPlan`, `FCineShotSegment`, and `FCineSceneContext`; contract between parsing and execution.
-- `IShotPlanProvider.h`: provider abstraction. An LLM-backed provider can replace the built-in parser without executor/UI changes.
+- `IShotPlanProvider.h`: provider abstraction. Two entry points — `BuildShotPlan` (blocking) and `BuildShotPlanAsync` (delegate, fired on the game thread); each defaults to the other, so a provider implements only the one it can answer. Callers use the async form.
 - `ShotGrammarParser.*`: deterministic offline parser. It splits clauses, resolves actor labels, applies grammar/defaults, and reports assumptions in `ParseNotes`.
+- `CineDirectorSettings.*`: `UCineDirectorSettings` (Project Settings → Plugins → CineDirector, stored per user in EditorPerProjectUserSettings so keys stay out of source control) — backend, model id, endpoint override, effort, token ceiling, timeout, fallback and scene-actor toggles. `FCineLlmCredentials` resolves a key from the setting, then the backend's env var, then `Saved/CineDirector/<Backend>.key`.
+- `ShotPlanJson.*`: the model wire format — one strict JSON Schema for a plan (also handed to the backend as a structured-output constraint), the system prompt, the scene-context user prompt, and the reply parser that resolves actor labels and clamps values. Adding a segment field means editing schema, parser and (if it needs prose guidance) the system prompt together.
+- `LlmShotPlanProvider.*`: async HTTP provider covering every backend — Anthropic messages, OpenAI-style chat completions (OpenAI, OpenRouter, Ollama/LM Studio, any compatible endpoint) and Gemini generateContent — plus `FShotPlanProviderRouter`, the provider the panel holds, which dispatches per request so a settings change applies on the next click. On failure it hands off to the grammar parser and says so in the shot notes.
 
 ## Editor execution layer
 
@@ -40,7 +43,7 @@
 ## Change checklist
 
 1. Add a segment field only if parser and executor require durable shared state.
-2. Parse the requested language, define default behavior, and emit notes for uncertainty.
+2. Parse the requested language, define default behavior, and emit notes for uncertainty. A new segment field needs both paths: grammar rules in `ShotGrammarParser`, and schema property + reader in `ShotPlanJson`.
 3. Execute it by authoring the appropriate camera, track, or world change.
 4. Expose it in vocabulary help; add builder affordances if common.
 5. Keep changes undoable and compatible with appending to existing sequences.

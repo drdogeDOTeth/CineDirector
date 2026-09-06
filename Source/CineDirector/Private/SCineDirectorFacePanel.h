@@ -32,6 +32,8 @@ private:
 	FReply OnBrowseAudio();
 	FReply OnAnalyzeFace();
 	FReply OnGenerate();
+	FReply OnPurgeUnusedFaceAnims();
+	FReply OnClearFaceCache();
 
 	FReply OnSaveCalibration();
 	FReply OnResetCalibration();
@@ -54,6 +56,11 @@ private:
 	TSharedPtr<SCheckBox> IsolateVoiceCheck;
 	/** Opt-in MetaHuman-style ARKit mouth layering + jaw co-articulation on dual voids. */
 	TSharedPtr<SCheckBox> LayeredArkitMouthCheck;
+	/**
+	 * When checked, each generate creates a unique timestamped asset.
+	 * Default off: reuses Mesh_Face so storage does not accumulate.
+	 */
+	TSharedPtr<SCheckBox> KeepNewTakeCheck;
 	TSharedPtr<STextBlock> StatusBlock;
 
 	// Tuning sliders (persisted for the editor session).

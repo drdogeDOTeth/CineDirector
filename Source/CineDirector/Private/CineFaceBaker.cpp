@@ -11,7 +11,9 @@
 #include "AssetToolsModule.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "FileHelpers.h"
 #include "GameFramework/Actor.h"
+#include "HAL/FileManager.h"
 #include "IAssetTools.h"
 #include "LevelSequence.h"
 #include "LevelSequenceEditorBlueprintLibrary.h"
@@ -19,7 +21,9 @@
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "MovieScene.h"
+#include "ObjectTools.h"
 #include "ScopedTransaction.h"
+#include "Sections/MovieSceneAudioSection.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
 #include "Sound/SoundWave.h"
 #include "Tracks/MovieSceneAudioTrack.h"
@@ -880,17 +884,38 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 
 	// --- Bake into a curves-only additive UAnimSequence: zero bone deltas, so
 	// layering it over a body animation moves the face and nothing else.
-	const FString AssetName = FString::Printf(TEXT("%s_Face_%s"),
-		*Request.Mesh->GetName(), *FDateTime::Now().ToString(TEXT("%m%d_%H%M%S")));
-	const FString PackagePath = FString(TEXT("/Game/CineDirector/FaceAnims")) / AssetName;
-	UPackage* Package = CreatePackage(*PackagePath);
-	if (!Package)
+	// Default: one stable working asset per mesh (Mesh_Face) so iterative
+	// generates do not fill Content with timestamped drafts.
+	const FString AssetName = Request.bKeepAsNewTake
+		? FString::Printf(TEXT("%s_Face_%s"), *Request.Mesh->GetName(), *FDateTime::Now().ToString(TEXT("%m%d_%H%M%S")))
+		: FString::Printf(TEXT("%s_Face"), *Request.Mesh->GetName());
+	const FString PackagePath = FString(FaceAnimFolder()) / AssetName;
+	const FString ObjectPath = PackagePath + TEXT(".") + AssetName;
+
+	UAnimSequence* Anim = FindObject<UAnimSequence>(nullptr, *ObjectPath);
+	if (!Anim)
 	{
-		OutError = TEXT("Could not create the animation package.");
-		return nullptr;
+		Anim = LoadObject<UAnimSequence>(nullptr, *ObjectPath);
 	}
 
-	UAnimSequence* Anim = NewObject<UAnimSequence>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+	bool bCreatedNew = false;
+	UPackage* Package = nullptr;
+	if (Anim)
+	{
+		Package = Anim->GetOutermost();
+	}
+	else
+	{
+		Package = CreatePackage(*PackagePath);
+		if (!Package)
+		{
+			OutError = TEXT("Could not create the animation package.");
+			return nullptr;
+		}
+		Anim = NewObject<UAnimSequence>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+		bCreatedNew = true;
+	}
+
 	Anim->SetSkeleton(Request.Mesh->GetSkeleton());
 
 	IAnimationDataController& Ctrl = Anim->GetController();
@@ -927,10 +952,22 @@ UAnimSequence* FCineFaceBaker::BakeAnimAsset(const FCineFaceBakeRequest& Request
 	Anim->RefPoseType = ABPT_RefPose;
 
 	Package->MarkPackageDirty();
-	FAssetRegistryModule::AssetCreated(Anim);
+	if (bCreatedNew)
+	{
+		FAssetRegistryModule::AssetCreated(Anim);
+	}
 
-	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Baked '%s': %d curves, %d frames (%.1fs). exclusiveVisemes=%d layered=%d gaze=%d artic=%.2f"),
-		*AssetName, CurvesWritten, NumFrames, (float)NumFrames / Fps,
+	// Persist only this package (do not SaveDirtyPackages for the whole project).
+	{
+		TArray<UPackage*> ToSave;
+		ToSave.Add(Package);
+		UEditorLoadingAndSavingUtils::SavePackages(ToSave, /*bOnlyDirty*/ false);
+	}
+
+	UE_LOG(LogCineDirectorFaceBake, Log,
+		TEXT("Baked '%s'%s: %d curves, %d frames (%.1fs). exclusiveVisemes=%d layered=%d gaze=%d artic=%.2f"),
+		*AssetName, bCreatedNew ? TEXT(" (new)") : TEXT(" (replaced)"),
+		CurvesWritten, NumFrames, (float)NumFrames / Fps,
 		Request.Profile.bExclusiveVisemes ? 1 : 0, Request.Profile.bLayeredBlendshapes ? 1 : 0,
 		bHasGaze ? 1 : 0, Request.Articulation);
 	return Anim;
@@ -997,6 +1034,9 @@ bool FCineFaceBaker::AddToSequencer(AActor* Actor, UAnimSequence* FaceAnim, USou
 	}
 
 	const FFrameNumber Start = MovieScene->GetPlaybackRange().GetLowerBoundValue();
+	const FFrameRate TickResolution = MovieScene->GetTickResolution();
+	const FFrameNumber DurationFrames = TickResolution.AsFrameNumber(FaceAnim->GetPlayLength());
+	const FFrameNumber End = Start + FMath::Max(FFrameNumber(1), DurationFrames);
 
 	UMovieSceneSkeletalAnimationTrack* AnimTrack = Cast<UMovieSceneSkeletalAnimationTrack>(
 		MovieScene->FindTrack(UMovieSceneSkeletalAnimationTrack::StaticClass(), ActorGuid));
@@ -1011,7 +1051,44 @@ bool FCineFaceBaker::AddToSequencer(AActor* Actor, UAnimSequence* FaceAnim, USou
 		return false;
 	}
 	AnimTrack->Modify();
-	AnimTrack->AddNewAnimation(Start, FaceAnim);
+
+	// Prefer updating an existing CineDirector face section so re-generates do
+	// not stack duplicate sections every click.
+	const FString FaceFolder = FString(FaceAnimFolder());
+	UMovieSceneSkeletalAnimationSection* TargetSection = nullptr;
+	for (UMovieSceneSection* Section : AnimTrack->GetAllSections())
+	{
+		UMovieSceneSkeletalAnimationSection* AnimSection = Cast<UMovieSceneSkeletalAnimationSection>(Section);
+		if (!AnimSection)
+		{
+			continue;
+		}
+		UAnimSequenceBase* ExistingAnim = AnimSection->Params.Animation;
+		if (ExistingAnim == FaceAnim)
+		{
+			TargetSection = AnimSection;
+			break;
+		}
+		if (!TargetSection && ExistingAnim)
+		{
+			const FString Path = ExistingAnim->GetOutermost()->GetName();
+			if (Path.StartsWith(FaceFolder))
+			{
+				TargetSection = AnimSection;
+			}
+		}
+	}
+
+	if (TargetSection)
+	{
+		TargetSection->Modify();
+		TargetSection->Params.Animation = FaceAnim;
+		TargetSection->SetRange(TRange<FFrameNumber>(Start, End));
+	}
+	else
+	{
+		AnimTrack->AddNewAnimation(Start, FaceAnim);
+	}
 
 	if (Audio)
 	{
@@ -1031,14 +1108,132 @@ bool FCineFaceBaker::AddToSequencer(AActor* Actor, UAnimSequence* FaceAnim, USou
 		if (AudioTrack)
 		{
 			AudioTrack->Modify();
-			AudioTrack->AddNewSound(Audio, Start);
+			// Update an existing section that already uses this SoundWave; otherwise add once.
+			bool bUpdatedAudio = false;
+			for (UMovieSceneSection* Section : AudioTrack->GetAllSections())
+			{
+				if (UMovieSceneAudioSection* AudioSection = Cast<UMovieSceneAudioSection>(Section))
+				{
+					if (AudioSection->GetSound() == Audio)
+					{
+						AudioSection->Modify();
+						AudioSection->SetRange(TRange<FFrameNumber>(Start, End));
+						bUpdatedAudio = true;
+						break;
+					}
+				}
+			}
+			if (!bUpdatedAudio)
+			{
+				AudioTrack->AddNewSound(Audio, Start);
+			}
 		}
 	}
 
 	ULevelSequenceEditorBlueprintLibrary::RefreshCurrentLevelSequence();
-	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("Added face animation '%s'%s to '%s' on binding '%s'."),
+	UE_LOG(LogCineDirectorFaceBake, Log, TEXT("%s face animation '%s'%s on '%s' binding '%s'."),
+		TargetSection ? TEXT("Updated") : TEXT("Added"),
 		*FaceAnim->GetName(), Audio ? TEXT(" + audio") : TEXT(""), *Sequence->GetName(), *ActorLabel);
 	return true;
+}
+
+int32 FCineFaceBaker::PurgeUnusedFaceAnims(FString& OutMessage)
+{
+	FAssetRegistryModule& AssetRegistryModule =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& Registry = AssetRegistryModule.Get();
+
+	FARFilter Filter;
+	Filter.PackagePaths.Add(FName(FaceAnimFolder()));
+	Filter.bRecursivePaths = true;
+	Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+
+	TArray<FAssetData> Assets;
+	Registry.GetAssets(Filter, Assets);
+	if (Assets.Num() == 0)
+	{
+		OutMessage = TEXT("No face animations under /Game/CineDirector/FaceAnims.");
+		return 0;
+	}
+
+	TArray<FAssetData> Unused;
+	int32 Referenced = 0;
+	for (const FAssetData& Asset : Assets)
+	{
+		TArray<FName> Referencers;
+		Registry.GetReferencers(Asset.PackageName, Referencers);
+		bool bHasExternalRef = false;
+		for (const FName& Ref : Referencers)
+		{
+			if (Ref != Asset.PackageName)
+			{
+				bHasExternalRef = true;
+				break;
+			}
+		}
+		if (bHasExternalRef)
+		{
+			++Referenced;
+		}
+		else
+		{
+			Unused.Add(Asset);
+		}
+	}
+
+	if (Unused.Num() == 0)
+	{
+		OutMessage = FString::Printf(
+			TEXT("Nothing to purge — all %d face anim(s) are still referenced."), Assets.Num());
+		return 0;
+	}
+
+	TArray<UObject*> Objects;
+	Objects.Reserve(Unused.Num());
+	for (const FAssetData& Asset : Unused)
+	{
+		if (UObject* Obj = Asset.GetAsset())
+		{
+			Objects.Add(Obj);
+		}
+	}
+
+	const int32 Deleted = ObjectTools::DeleteObjects(Objects, /*bShowConfirmation*/ false);
+	OutMessage = FString::Printf(
+		TEXT("Purged %d unused face anim(s); kept %d still referenced by sequences/maps."),
+		Deleted, Referenced);
+	UE_LOG(LogCineDirectorFaceBake, Display, TEXT("%s"), *OutMessage);
+	return Deleted;
+}
+
+int32 FCineFaceBaker::ClearFaceCache(FString& OutMessage)
+{
+	const FString CacheRoot = FPaths::ConvertRelativePathToFull(
+		FPaths::ProjectSavedDir() / TEXT("CineDirectorFace"));
+	if (!FPaths::DirectoryExists(CacheRoot))
+	{
+		OutMessage = TEXT("No Saved/CineDirectorFace cache folder.");
+		return 0;
+	}
+
+	TArray<FString> Files;
+	IFileManager::Get().FindFilesRecursive(Files, *CacheRoot, TEXT("*.*"), true, false);
+	int32 Removed = 0;
+	for (const FString& File : Files)
+	{
+		if (IFileManager::Get().Delete(*File, false, true))
+		{
+			++Removed;
+		}
+	}
+	// Drop empty dirs best-effort.
+	IFileManager::Get().DeleteDirectory(*CacheRoot, false, true);
+	IFileManager::Get().MakeDirectory(*CacheRoot, true);
+
+	OutMessage = FString::Printf(TEXT("Cleared face cache (%d file(s) under Saved/CineDirectorFace)."), Removed);
+	UE_LOG(LogCineDirectorFaceBake, Display, TEXT("%s"), *OutMessage);
+	return Removed;
 }
 
 #undef LOCTEXT_NAMESPACE

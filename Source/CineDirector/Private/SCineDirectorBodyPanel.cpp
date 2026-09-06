@@ -168,8 +168,8 @@ FReply SCineDirectorBodyPanel::OnGenerate()
 	}
 	const FCineBodySpec Spec = FCineBodyGrammar::Parse(Description, GetTypeHash(Actor->GetActorLabel()));
 	FCineBodyAnimDef Anim = FCineBodyAuthor::Build(Rig, Spec);
-	Anim.Name = FString::Printf(TEXT("%s_%s_%s"), *Mesh->GetName(), *Anim.Name,
-		*FDateTime::Now().ToString(TEXT("%m%d_%H%M%S")));
+	// Stable name per mesh + performance slug — re-running overwrites instead of stacking assets.
+	Anim.Name = FString::Printf(TEXT("%s_%s"), *Mesh->GetName(), *Anim.Name);
 
 	TArray<UPackage*> Packages;
 	UAnimSequence* Baked = CineBodyRigOps::Bake(Rig, Anim, TEXT("/Game/CineDirector/BodyAnims"), Packages, Error);
@@ -179,7 +179,10 @@ FReply SCineDirectorBodyPanel::OnGenerate()
 		return FReply::Handled();
 	}
 	CineBodyRigOps::WritePreviewSheet(Rig, Anim, FPaths::ProjectSavedDir() / TEXT("CineDirectorBody"));
-	UEditorLoadingAndSavingUtils::SaveDirtyPackages(/*bSaveMapPackages*/ false, /*bSaveContentPackages*/ true);
+	if (Packages.Num() > 0)
+	{
+		UEditorLoadingAndSavingUtils::SavePackages(Packages, /*bOnlyDirty*/ false);
+	}
 
 	if (!FCineFaceBaker::AddToSequencer(Actor, Baked, /*Audio*/ nullptr, Error))
 	{

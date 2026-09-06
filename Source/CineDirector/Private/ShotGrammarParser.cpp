@@ -407,9 +407,14 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 	}
 
 	// ---- View side --------------------------------------------------------------
-	// Possessive sides ("its left", "behind it") are relative to the actor's own
-	// root rotation; plain sides ("from the left") are relative to the viewport.
-	if (ContainsAny(Text, { TEXT("its front"), TEXT("his front"), TEXT("her front"), TEXT("their front") }))
+	// Possessive sides ("its left", "behind it") are relative to the *face* forward
+	// (eyes/head — void roots are often 90° off). Plain sides ("from the left")
+	// are relative to the viewport. "from front" / "from the front" without "its"
+	// still means the character's face (what users expect on voids).
+	if (ContainsAny(Text, {
+		TEXT("its front"), TEXT("his front"), TEXT("her front"), TEXT("their front"),
+		TEXT("from its front"), TEXT("from his front"), TEXT("from her front"), TEXT("from their front"),
+		TEXT("from the front"), TEXT("from front"), TEXT("to the front") }))
 	{
 		OutSegment.ViewSide = ECineViewSide::Front;
 		OutSegment.bActorRelativeSide = true;

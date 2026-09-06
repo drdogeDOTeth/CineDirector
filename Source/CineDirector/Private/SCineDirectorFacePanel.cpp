@@ -359,13 +359,50 @@ void SCineDirectorFacePanel::Construct(const FArguments& InArgs)
 				.OnClicked(this, &SCineDirectorFacePanel::OnClearNeutralPreview)
 			]
 		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 2.0f)
+		[
+			SAssignNew(KeepNewTakeCheck, SCheckBox)
+			.IsChecked(ECheckBoxState::Unchecked)
+			.ToolTipText(LOCTEXT("KeepNewTakeTip",
+				"Off (default): overwrites Content/CineDirector/FaceAnims/<Mesh>_Face each generate — no storage pile-up. "
+				"On: keeps a unique timestamped take every time (for archiving finals)."))
+			[
+				SNew(STextBlock).Text(LOCTEXT("KeepNewTake", "Keep each take as a new asset"))
+			]
+		]
+
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 2.0f)
 		[
 			SNew(SButton)
 			.ButtonStyle(FAppStyle::Get(), "PrimaryButton")
 			.Text(LOCTEXT("Generate", "Generate Face Animation"))
-			.ToolTipText(LOCTEXT("GenerateTip", "Bakes an additive, curves-only animation asset and layers it onto the character in the open Level Sequence — the body animation keeps playing underneath."))
+			.ToolTipText(LOCTEXT("GenerateTip",
+				"Bakes an additive, curves-only animation asset and layers it onto the character in the open Level Sequence. "
+				"By default reuses one working asset per mesh (no draft pile-up)."))
 			.OnClicked(this, &SCineDirectorFacePanel::OnGenerate)
+		]
+
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 2.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("PurgeFace", "Purge unused face anims"))
+				.ToolTipText(LOCTEXT("PurgeFaceTip",
+					"Deletes Content/CineDirector/FaceAnims assets that no sequence or map still references. "
+					"Safe for old timestamped drafts; keeps anything still on a Level Sequence."))
+				.OnClicked(this, &SCineDirectorFacePanel::OnPurgeUnusedFaceAnims)
+			]
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("ClearFaceCache", "Clear voice-isolation cache"))
+				.ToolTipText(LOCTEXT("ClearFaceCacheTip",
+					"Deletes Saved/CineDirectorFace (Demucs stems and ffmpeg conversions). "
+					"Next isolate-voice run rebuilds what it needs."))
+				.OnClicked(this, &SCineDirectorFacePanel::OnClearFaceCache)
+			]
 		]
 
 		+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f)
@@ -626,6 +663,7 @@ FReply SCineDirectorFacePanel::OnGenerate()
 	Request.EmotionStrength = EmotionStrength;
 	Request.Articulation = Articulation;
 	Request.Calibration = Calibration;
+	Request.bKeepAsNewTake = KeepNewTakeCheck.IsValid() && KeepNewTakeCheck->IsChecked();
 	Request.DurationSeconds = FMath::Clamp(FCString::Atof(*DurationBox->GetText().ToString()), 0.5f, 600.0f);
 	if (Request.DurationSeconds < 0.51f)
 	{
@@ -726,14 +764,32 @@ FReply SCineDirectorFacePanel::OnGenerate()
 		}
 	}
 	SetStatus(FString::Printf(
-		TEXT("Done: %s — %.1fs of %s%s%s | mouth %.2f artic %.2f emotion %.2f layered onto '%s'. %s"),
-		*FaceAnim->GetName(), Request.DurationSeconds,
+		TEXT("Done: %s%s — %.1fs of %s%s%s | mouth %.2f artic %.2f emotion %.2f layered onto '%s'. %s"),
+		*FaceAnim->GetName(),
+		Request.bKeepAsNewTake ? TEXT(" (new take)") : TEXT(" (replaced working)"),
+		Request.DurationSeconds,
 		Request.Visemes.Num() > 0 ? (AudioPath.IsEmpty() ? TEXT("procedural talking") : TEXT("audio-driven lipsync")) : TEXT("expression"),
 		*IsoTag,
 		*EmotionNote,
 		MouthStrength, Articulation, EmotionStrength,
 		*Actor->GetActorLabel(),
 		Sound ? TEXT("Audio on sequence track.") : TEXT("")));
+	return FReply::Handled();
+}
+
+FReply SCineDirectorFacePanel::OnPurgeUnusedFaceAnims()
+{
+	FString Message;
+	const int32 Deleted = FCineFaceBaker::PurgeUnusedFaceAnims(Message);
+	SetStatus(Message, Deleted < 0);
+	return FReply::Handled();
+}
+
+FReply SCineDirectorFacePanel::OnClearFaceCache()
+{
+	FString Message;
+	FCineFaceBaker::ClearFaceCache(Message);
+	SetStatus(Message, false);
 	return FReply::Handled();
 }
 

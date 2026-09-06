@@ -672,16 +672,35 @@ namespace CineBodyRigOps
 			}
 		}
 
+		// Stable package path: same mesh + slug reuses one asset (no timestamp pile-up).
 		const FString PackagePath = PackageFolder / Anim.Name;
-		UPackage* Package = CreatePackage(*PackagePath);
-		if (!Package)
-		{
-			OutError = TEXT("Could not create the animation package.");
-			return nullptr;
-		}
-		Package->FullyLoad();
+		const FString ObjectPath = PackagePath + TEXT(".") + Anim.Name;
 
-		UAnimSequence* Sequence = NewObject<UAnimSequence>(Package, *Anim.Name, RF_Public | RF_Standalone);
+		UAnimSequence* Sequence = FindObject<UAnimSequence>(nullptr, *ObjectPath);
+		if (!Sequence)
+		{
+			Sequence = LoadObject<UAnimSequence>(nullptr, *ObjectPath);
+		}
+
+		bool bCreatedNew = false;
+		UPackage* Package = nullptr;
+		if (Sequence)
+		{
+			Package = Sequence->GetOutermost();
+		}
+		else
+		{
+			Package = CreatePackage(*PackagePath);
+			if (!Package)
+			{
+				OutError = TEXT("Could not create the animation package.");
+				return nullptr;
+			}
+			Package->FullyLoad();
+			Sequence = NewObject<UAnimSequence>(Package, *Anim.Name, RF_Public | RF_Standalone);
+			bCreatedNew = true;
+		}
+
 		Sequence->SetSkeleton(Rig.Mesh->GetSkeleton());
 
 		IAnimationDataController& Ctrl = Sequence->GetController();
@@ -712,11 +731,14 @@ namespace CineBodyRigOps
 		Ctrl.CloseBracket();
 
 		Package->MarkPackageDirty();
-		FAssetRegistryModule::AssetCreated(Sequence);
-		OutPackages.Add(Package);
+		if (bCreatedNew)
+		{
+			FAssetRegistryModule::AssetCreated(Sequence);
+		}
+		OutPackages.AddUnique(Package);
 
-		UE_LOG(LogCineDirectorBody, Display, TEXT("Baked body anim '%s': %d tracks, %d frames (%.1fs)"),
-			*Anim.Name, Tracks.Num(), NumFrames, Anim.Duration);
+		UE_LOG(LogCineDirectorBody, Display, TEXT("Baked body anim '%s'%s: %d tracks, %d frames (%.1fs)"),
+			*Anim.Name, bCreatedNew ? TEXT(" (new)") : TEXT(" (replaced)"), Tracks.Num(), NumFrames, Anim.Duration);
 		return Sequence;
 	}
 

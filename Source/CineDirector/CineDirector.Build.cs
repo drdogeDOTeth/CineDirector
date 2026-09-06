@@ -17,6 +17,7 @@ public class CineDirector : ModuleRules
 			"MovieRenderPipelineEditor", "MovieRenderPipelineRenderPasses",
 			"MovieRenderPipelineSettings", "AssetTools", "AssetRegistry",
 			"ContentBrowser", "IKRig", "IKRigEditor", "DesktopPlatform",
+			"HTTP", "Json", "JsonUtilities", "DeveloperSettings",
 		});
 	}
 }
