@@ -651,11 +651,12 @@ bool FShotGrammarParser::ParseSegment(const FString& Clause, const FCineSceneCon
 	}
 	else
 	{
-		// Linear moves: accept meters or centimeters/units.
-		if (MatchNumber(Text, TEXT("(\\d+(?:\\.\\d+)?)\\s*(?:meters|meter|metres|metre|m)\\b"), Number) &&
-			!MatchNumber(Text, TEXT("(\\d+(?:\\.\\d+)?)\\s*mm\\b"), Number))
+		// Linear moves: accept meters or centimeters/units. No mm guard is needed —
+		// the metres pattern requires a word boundary after "m", so a lens token like
+		// "55mm" can never match it. Guarding on mm instead threw away a legitimate
+		// distance whenever a clause named both ("pull back 3 meters, 55mm").
+		if (MatchNumber(Text, TEXT("(\\d+(?:\\.\\d+)?)\\s*(?:meters|meter|metres|metre|m)\\b"), Number))
 		{
-			MatchNumber(Text, TEXT("(\\d+(?:\\.\\d+)?)\\s*(?:meters|meter|metres|metre|m)\\b"), Number);
 			OutSegment.MoveAmount = Number * 100.0; // meters → cm
 		}
 		else if (MatchNumber(Text, TEXT("(\\d+(?:\\.\\d+)?)\\s*(?:cm|centimeters|centimetres|units)\\b"), Number))
