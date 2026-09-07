@@ -40,6 +40,7 @@ the server is off — a busy editor can simply be slow to answer. Discovery wait
 | `measure_stairs.py` | Fall line, rise, run and pitch of each stair flight, by least squares. |
 | `verify_route.py` | Checks an authored foot path against collision — floats and sinks. |
 | `author_stairs.py` | Builds the Templar stair-descent sequence. |
+| `attach_aura.py` | Parents `BP_Aura_Gold` to the Templar inside a level sequence. |
 | `inspect_boundaries.py` | Audits anim-section boundaries against the transform keys. |
 | `cleanup_temp_actors.py` | Sweeps `CDTEST_` / `CDPREVIEW_` / `CDMARK_` actors and scene captures. |
 
