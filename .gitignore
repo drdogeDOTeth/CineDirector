@@ -17,3 +17,7 @@ Saved/
 
 # Debug symbols
 *.pdb
+
+# Python
+__pycache__/
+*.pyc
