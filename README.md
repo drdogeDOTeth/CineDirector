@@ -5,12 +5,41 @@ focus, effects, lighting and camera cuts in the Level Sequence currently open in
 Sequencer — then renders it out through Movie Render Queue, and can even cut the
 render into a styled movie trailer.
 
+This is the **UE 5.8 C++ edition**. There is a separate Otherside ODK edition at
+[drdogeDOTeth/CineDirectorODK](https://github.com/drdogeDOTeth/CineDirectorODK):
+pure Python, for the ODK's Blueprint-only UE 5.5 build where no C++ module can be
+compiled. The two speak the same shot-plan format but share no code, and neither
+installs into the other's engine.
+
+## Install
+
+Install once into the engine and every project on it picks the plugin up:
+
+```powershell
+.\Tools\Install-Plugin.ps1 -Engine
+```
+
+That compiles the plugin and puts it in the engine's `Plugins\Marketplace`. Run it
+again after a C++ change or an engine patch, because an installed engine cannot
+rebuild its own engine plugins.
+
+While you are still editing the C++, link the checkout into the project you are
+working in instead, so Live Coding keeps working:
+
+```powershell
+.\Tools\Install-Plugin.ps1 -Project "C:\Path\To\MyGame"
+```
+
+Then regenerate project files and rebuild. Never do both for the same project:
+two plugins with the same name is a startup error. Pass `-EngineRoot` for an
+engine other than `C:\Program Files\Epic Games\UE_5.8`, and `-Uninstall` to undo
+either mode.
+
 ## Usage
 
-1. Copy the `CineDirector` folder into your project's `Plugins/` directory and rebuild.
-2. Open a Level Sequence in Sequencer.
-3. Open the panel: **Window ▸ Cinematics ▸ CineDirector**.
-4. Type a description and press **Create Shots in Sequencer**.
+1. Open a Level Sequence in Sequencer.
+2. Open the panel: **Window ▸ Cinematics ▸ CineDirector**.
+3. Type a description and press **Create Shots in Sequencer**.
 
 Example:
 
